@@ -1,0 +1,6 @@
+aiogram==3.13.0
+anthropic==0.77.1
+aiosqlite==0.20.0
+apscheduler==3.10.4
+python-dotenv==1.2.1
+pytz==2024.1
