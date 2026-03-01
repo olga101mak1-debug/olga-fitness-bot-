@@ -4,7 +4,7 @@ import anthropic
 from config import ANTHROPIC_API_KEY, USER
 from foods_nha_trang import get_high_protein_suggestions
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 SYSTEM_PROMPT = f"""Ты фитнес-ассистент для Ольги, 46 лет, Нячанг, Вьетнам.
 Цели/день: белок {USER['protein_goal_g']}г, калории {USER['calories_goal_kcal']} ккал, кальций {USER['calcium_goal_mg']} мг, клетчатка {USER['fiber_goal_g']}г.
@@ -45,7 +45,7 @@ _FOOD_FORMAT = (
 
 async def analyze_food_photo(image_bytes: bytes) -> dict:
     image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
-    response = client.messages.create(
+    response = await client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=400,
         system=SYSTEM_PROMPT,
@@ -69,7 +69,7 @@ async def analyze_food_photo(image_bytes: bytes) -> dict:
 
 
 async def analyze_food_text(description: str) -> dict:
-    response = client.messages.create(
+    response = await client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=350,
         system=SYSTEM_PROMPT,
@@ -91,7 +91,7 @@ async def get_protein_suggestion(current_protein: float, target_protein: float) 
     foods = get_high_protein_suggestions(needed)
     foods_text = "\n".join(foods)
 
-    response = client.messages.create(
+    response = await client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=200,
         system=SYSTEM_PROMPT,
@@ -112,7 +112,7 @@ async def generate_evening_summary(totals: dict, log: dict, target_protein: int,
     fiber_goal = USER.get("fiber_goal_g", 28)
     steps_goal = USER.get("steps_goal", 8000)
 
-    response = client.messages.create(
+    response = await client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=400,
         system=SYSTEM_PROMPT,
