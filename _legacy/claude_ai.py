@@ -46,7 +46,7 @@ _FOOD_FORMAT = (
 async def analyze_food_photo(image_bytes: bytes) -> dict:
     image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
     response = await client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-haiku-4-5-20251001",
         max_tokens=400,
         system=SYSTEM_PROMPT,
         messages=[{
@@ -70,7 +70,7 @@ async def analyze_food_photo(image_bytes: bytes) -> dict:
 
 async def analyze_food_text(description: str) -> dict:
     response = await client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-haiku-4-5-20251001",
         max_tokens=350,
         system=SYSTEM_PROMPT,
         messages=[{
@@ -92,7 +92,7 @@ async def get_protein_suggestion(current_protein: float, target_protein: float) 
     foods_text = "\n".join(foods)
 
     response = await client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-haiku-4-5-20251001",
         max_tokens=200,
         system=SYSTEM_PROMPT,
         messages=[{
@@ -113,7 +113,7 @@ async def generate_evening_summary(totals: dict, log: dict, target_protein: int,
     steps_goal = USER.get("steps_goal", 8000)
 
     response = await client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-haiku-4-5-20251001",
         max_tokens=400,
         system=SYSTEM_PROMPT,
         messages=[{
