@@ -21,10 +21,14 @@ async def call_tool(system: str, user_message: str, tool_schema: dict, max_token
 
 
 async def call_text(system: str, user_message: str, max_tokens: int = 500) -> str:
-    response = await client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": user_message}],
-    )
-    return "".join(block.text for block in response.content if block.type == "text")
+    for attempt in range(2):
+        response = await client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        text = "".join(block.text for block in response.content if block.type == "text")
+        if text:
+            return text
+    return "Не получилось сформулировать ответ с первого раза — спроси ещё раз, возможно чуть иначе."
