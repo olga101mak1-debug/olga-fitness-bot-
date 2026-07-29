@@ -1,6 +1,6 @@
 from datetime import timedelta, datetime
 
-from app.repositories import daily_log_repo, event_repos, user_repo, meal_repo
+from app.repositories import chat_repo, daily_log_repo, event_repos, user_repo, meal_repo
 from app.services.ai import parser as ai_parser
 from app.services.ai import coach as ai_coach
 from app.services.ai import weekly_analyst
@@ -14,6 +14,44 @@ DAILY_LOG_KEYS = {
 }
 
 MEAL_CORRECTION_WINDOW_MINUTES = 20
+DIALOG_MESSAGES_IN_CONTEXT = 20
+
+WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+
+
+def _now_human() -> str:
+    now = now_local()
+    return f"{now.strftime('%d.%m.%Y')}, {WEEKDAYS_RU[now.weekday()]}, {now.strftime('%H:%M')}"
+
+
+def _totals_line(totals: dict, user: dict) -> str:
+    line = f"Итого за день: {totals['calories']:.0f}"
+    if user.get("calories_goal_kcal"):
+        line += f"/{user['calories_goal_kcal']:.0f}"
+    line += f" ккал, белок {totals['protein']:.0f}"
+    if user.get("protein_goal_g"):
+        line += f"/{user['protein_goal_g']:.0f}"
+    return line + "г"
+
+
+def _save_parsed_meals(parsed: dict, today: str) -> str | None:
+    """Еда, названная словами или голосом, тоже должна попадать в дневной итог."""
+    meals = [m for m in (parsed.get("meals") or []) if m.get("dish")]
+    if not meals:
+        return None
+    for m in meals:
+        meal_repo.add_meal(
+            today, description=m.get("dish"),
+            calories=m.get("calories") or 0, protein=m.get("protein") or 0,
+            fat=m.get("fat") or 0, carbs=m.get("carbs") or 0,
+            calcium=m.get("calcium") or 0, fiber=m.get("fiber") or 0,
+        )
+    added_cal = sum(m.get("calories") or 0 for m in meals)
+    added_prot = sum(m.get("protein") or 0 for m in meals)
+    names = ", ".join(m["dish"] for m in meals)
+    totals = meal_repo.get_today_totals(today)
+    user = user_repo.get_user() or {}
+    return f"🍽 Записала: {names} — {added_cal:.0f} ккал, {added_prot:.0f}г белка.\n{_totals_line(totals, user)}"
 
 
 async def _try_meal_correction(text: str, today: str) -> str | None:
@@ -43,24 +81,20 @@ async def _try_meal_correction(text: str, today: str) -> str | None:
     totals = meal_repo.get_today_totals(today)
     user = user_repo.get_user() or {}
     line = f"Обновила: {updated_meal['description']} — {updated_meal['calories']:.0f} ккал, {updated_meal['protein']:.0f}г белка."
-    totals_line = f"Итого за день: {totals['calories']:.0f}"
-    if user.get("calories_goal_kcal"):
-        totals_line += f"/{user['calories_goal_kcal']:.0f}"
-    totals_line += f" ккал, белок {totals['protein']:.0f}"
-    if user.get("protein_goal_g"):
-        totals_line += f"/{user['protein_goal_g']:.0f}"
-    totals_line += "г"
-    return f"{line}\n{totals_line}"
+    return f"{line}\n{_totals_line(totals, user)}"
 
 
 async def process_message(text: str) -> str:
     today = today_local().isoformat()
+    chat_repo.add("user", text, date=today)
 
     correction_reply = await _try_meal_correction(text, today)
     if correction_reply:
+        chat_repo.add("bot", correction_reply, date=today)
         return correction_reply
 
     parsed = await ai_parser.parse(text)
+    meal_line = _save_parsed_meals(parsed, today)
 
     daily_fields = {k: v for k, v in parsed.items() if k in DAILY_LOG_KEYS}
     daily_log_repo.upsert(today, **daily_fields)
@@ -88,7 +122,23 @@ async def process_message(text: str) -> str:
     insights = event_repos.get_recent_insights(limit=5)
     user = user_repo.get_user() or {}
 
-    reply = await ai_coach.generate_reply(today_state, history, goal, insights, user, text, baseline)
+    meals = meal_repo.get_today_meals(today)
+    meal_totals = meal_repo.get_today_totals(today)
+    activities = event_repos.get_activities_range(today, today)
+
+    # Последнее сообщение диалога — это текущая реплика, она уходит отдельным полем.
+    dialog = chat_repo.get_today(today, limit=DIALOG_MESSAGES_IN_CONTEXT + 1)
+    if dialog and dialog[-1]["role"] == "user":
+        dialog = dialog[:-1]
+
+    reply = await ai_coach.generate_reply(
+        today_state, history, goal, insights, user, text, baseline,
+        now=_now_human(), meals=meals, meal_totals=meal_totals,
+        activities=activities, dialog=dialog,
+    )
+    if meal_line:
+        reply = f"{meal_line}\n\n{reply}"
+    chat_repo.add("bot", reply, date=today)
     return reply
 
 

@@ -133,6 +133,18 @@ class Photo(Base):
     note = Column(Text)
 
 
+class ChatMessage(Base):
+    """Короткая память диалога: что писала пользовательница и что отвечал бот."""
+
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(String)
+    created_at = Column(String)
+    role = Column(String)  # user / bot
+    text = Column(Text)
+
+
 class Goal(Base):
     __tablename__ = "goals"
 

@@ -3,7 +3,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
 
-from app.repositories import user_repo, daily_log_repo, event_repos
+from app.repositories import user_repo, daily_log_repo, event_repos, chat_repo
 from app.services.ai import insight_generator
 from app.services import life_service
 from app.utils import today_local
@@ -26,6 +26,7 @@ async def morning_job(bot):
     else:
         text = f"☀️ Доброе утро, {user.get('name', '')}! Вес сегодня?"
     await bot.send_message(user["chat_id"], text)
+    chat_repo.add("bot", text, date=today)
 
 
 EVENING_CHECKLIST = (
@@ -47,6 +48,7 @@ async def evening_job(bot):
     if not user or not user.get("chat_id"):
         return
     await bot.send_message(user["chat_id"], EVENING_CHECKLIST)
+    chat_repo.add("bot", "🌙 Спросила, как прошёл день (вечерний чек-лист).")
 
 
 async def weekly_job(bot):

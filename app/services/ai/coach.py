@@ -14,6 +14,14 @@ def _build_system(user: dict) -> str:
 Запрещено: "вы нарушили", "вы пропустили", "следует", любой осуждающий тон.
 Разрешено и приветствуется: "ничего страшного", "продолжаем", "отличная работа", "такое бывает".
 
+Ты ведёшь один непрерывный разговор в течение дня, а не отвечаешь каждый раз с чистого листа:
+— В контексте ниже есть переписка за сегодня. Отвечай на ПОСЛЕДНЕЕ сообщение как продолжение этого разговора.
+— Не повторяй то, что уже написала сегодня (в том числе выводы про сон, вес и самочувствие) — если это уже
+  сказано, просто опирайся на это, а не пересказывай заново.
+— Не задавай вопрос, на который сегодня уже получила ответ, и не предлагай сделать то, что уже сделано.
+— Учитывай текущее время: не называй дневную еду завтраком, не желай доброго утра днём и вечером.
+— Всё, что уже записано за сегодня (еда, тренировки, замеры), считай известным и не спрашивай об этом снова.
+
 Если не хватает по-настоящему важной информации за сегодня — задай не более {MAX_CLARIFYING_QUESTIONS}
 уточняющих вопросов, максимально коротких. Никогда не спрашивай то, что уже записано сегодня (см. "Уже известно за сегодня").
 Если всё важное уже есть — просто дай тёплый, конкретный отклик на день, без вопросов.
@@ -22,12 +30,33 @@ def _build_system(user: dict) -> str:
 Отвечай по-русски, живо, 3-6 предложений."""
 
 
+def _format_dialog(dialog: list[dict]) -> str:
+    lines = []
+    for m in dialog:
+        who = "Она" if m.get("role") == "user" else "Ты"
+        time = (m.get("created_at") or "")[11:16]
+        lines.append(f"[{time}] {who}: {m.get('text', '')}")
+    return "\n".join(lines)
+
+
 def _format_context(today: dict, history: list[dict], goal: dict | None, insights: list[dict],
-                     baseline: dict | None = None) -> str:
+                     baseline: dict | None = None, now: str | None = None,
+                     meals: list[dict] | None = None, meal_totals: dict | None = None,
+                     activities: list[dict] | None = None, dialog: list[dict] | None = None) -> str:
     known = {k: v for k, v in today.items() if v is not None and k != "date"}
-    lines = [
-        f"Сегодня ({today.get('date')}), уже известно за сегодня: {json.dumps(known, ensure_ascii=False)}",
-    ]
+    lines = []
+    if now:
+        lines.append(f"Сейчас: {now}. Ориентируйся на это время суток.")
+    lines.append(f"Сегодня ({today.get('date')}), уже известно за сегодня: {json.dumps(known, ensure_ascii=False)}")
+    if meals:
+        lines.append(f"Приёмы пищи, уже записанные за сегодня: {json.dumps(meals, ensure_ascii=False)}")
+    if meal_totals and meal_totals.get("count"):
+        lines.append(f"Итого по еде за сегодня: {json.dumps(meal_totals, ensure_ascii=False)}")
+    elif not meals:
+        lines.append("Приёмов пищи за сегодня пока не записано (это не значит, что она не ела — "
+                     "возможно просто не присылала).")
+    if activities:
+        lines.append(f"Активности и тренировки, уже записанные за сегодня: {json.dumps(activities, ensure_ascii=False)}")
     if baseline:
         lines.append(
             "Точка старта наблюдений (используй ТОЛЬКО эту дату и эти цифры для любых формулировок "
@@ -44,12 +73,18 @@ def _format_context(today: dict, history: list[dict], goal: dict | None, insight
         lines.append(f"Активная цель: {json.dumps(goal, ensure_ascii=False)}")
     if insights:
         lines.append(f"Ранее замеченные закономерности: {json.dumps(insights, ensure_ascii=False)}")
+    if dialog:
+        lines.append("Переписка за сегодня (сверху старые, снизу свежие; «Ты» — это твои же прошлые ответы):\n"
+                     + _format_dialog(dialog))
     return "\n\n".join(lines)
 
 
 async def generate_reply(today: dict, history: list[dict], goal: dict | None,
                           insights: list[dict], user: dict, user_message: str,
-                          baseline: dict | None = None) -> str:
-    context = _format_context(today, history, goal, insights, baseline)
+                          baseline: dict | None = None, now: str | None = None,
+                          meals: list[dict] | None = None, meal_totals: dict | None = None,
+                          activities: list[dict] | None = None, dialog: list[dict] | None = None) -> str:
+    context = _format_context(today, history, goal, insights, baseline, now=now, meals=meals,
+                               meal_totals=meal_totals, activities=activities, dialog=dialog)
     prompt = f"{context}\n\nСообщение пользователя только что: \"{user_message}\"\n\nНапиши ответ."
     return await call_text(_build_system(user), prompt, max_tokens=2000)

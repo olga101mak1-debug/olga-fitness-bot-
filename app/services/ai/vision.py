@@ -65,15 +65,26 @@ def _image_block(image_bytes: bytes, media_type: str = "image/jpeg") -> dict:
     }
 
 
-async def analyze_photo(image_bytes: bytes, caption: str | None = None, previous_image_bytes: bytes | None = None,
-                         user: dict | None = None, today_totals: dict | None = None) -> dict:
+ALBUM_HINT = """Пользователь прислал {n} фото ОДНИМ альбомом. Это ОДИН объект: один и тот же приём пищи
+с разных ракурсов (например само блюдо и этикетка с составом рядом), или части одного журнала тренировки.
+Разбери их вместе и верни РОВНО ОДИН результат: не считай одно и то же блюдо несколько раз, не складывай
+порции с разных ракурсов в одну большую, а объедини информацию в одну оценку. Если на одном из фото этикетка
+или журнал с цифрами — бери цифры оттуда, а размер порции определяй по фото самого блюда."""
+
+
+async def analyze_photos(images: list[bytes], caption: str | None = None, previous_image_bytes: bytes | None = None,
+                          user: dict | None = None, today_totals: dict | None = None) -> dict:
+    """Разобрать одно фото или альбом из нескольких фото как единое целое."""
     content = []
     if previous_image_bytes:
         content.append({"type": "text", "text": "Более раннее фото (для сравнения):"})
         content.append(_image_block(previous_image_bytes))
         content.append({"type": "text", "text": "Новое фото (сегодня):"})
-    content.append(_image_block(image_bytes))
-    text = "Проанализируй это фото."
+    if len(images) > 1:
+        content.append({"type": "text", "text": ALBUM_HINT.format(n=len(images))})
+    for image_bytes in images:
+        content.append(_image_block(image_bytes))
+    text = "Проанализируй это фото." if len(images) == 1 else f"Проанализируй эти {len(images)} фото как одно целое."
     if caption:
         text += f" Подпись от пользователя: \"{caption}\"."
     if user:
@@ -84,7 +95,7 @@ async def analyze_photo(image_bytes: bytes, caption: str | None = None, previous
 
     response = await client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=900,
+        max_tokens=1200,
         system=VISION_SYSTEM,
         tools=[PHOTO_TOOL],
         tool_choice={"type": "tool", "name": "analyze_photo"},
@@ -94,3 +105,10 @@ async def analyze_photo(image_bytes: bytes, caption: str | None = None, previous
         if block.type == "tool_use":
             return block.input
     return {"kind": "other", "summary": "", "recommendation": "Не удалось разобрать фото, попробуй ещё раз."}
+
+
+async def analyze_photo(image_bytes: bytes, caption: str | None = None, previous_image_bytes: bytes | None = None,
+                         user: dict | None = None, today_totals: dict | None = None) -> dict:
+    """Совместимость: разбор одного фото."""
+    return await analyze_photos([image_bytes], caption=caption, previous_image_bytes=previous_image_bytes,
+                                 user=user, today_totals=today_totals)
