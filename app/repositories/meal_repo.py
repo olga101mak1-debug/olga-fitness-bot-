@@ -32,6 +32,35 @@ def update_meal(meal_id: int, **fields):
                 setattr(row, k, v)
 
 
+def delete_meal(meal_id: int) -> dict | None:
+    """Удалить приём пищи. Возвращает удалённую запись, чтобы можно было честно отчитаться."""
+    with session_scope() as s:
+        row = s.get(Meal, meal_id)
+        if not row:
+            return None
+        data = _to_dict(row)
+        s.delete(row)
+        return data
+
+
+def move_meal(meal_id: int, new_date: str) -> dict | None:
+    """Перенести приём пищи на другую дату (например, «это я ела вчера»)."""
+    with session_scope() as s:
+        row = s.get(Meal, meal_id)
+        if not row:
+            return None
+        row.date = new_date
+        s.flush()
+        return _to_dict(row)
+
+
+def get_meals_full(date: str) -> list[dict]:
+    """Полные записи с id — нужны там, где записи надо править, а не только показывать."""
+    with session_scope() as s:
+        rows = s.query(Meal).filter(Meal.date == date).order_by(Meal.id).all()
+        return [_to_dict(r) for r in rows]
+
+
 def get_meal_by_photo(date: str, photo_unique_id: str | None) -> dict | None:
     if not photo_unique_id:
         return None
@@ -42,6 +71,12 @@ def get_meal_by_photo(date: str, photo_unique_id: str | None) -> dict | None:
             .order_by(Meal.id.desc())
             .first()
         )
+        return _to_dict(row) if row else None
+
+
+def get_meal_by_id(meal_id: int) -> dict | None:
+    with session_scope() as s:
+        row = s.get(Meal, meal_id)
         return _to_dict(row) if row else None
 
 

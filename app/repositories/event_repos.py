@@ -14,6 +14,49 @@ def get_activities_range(start_date: str, end_date: str) -> list[dict]:
         return [{"date": r.date, "type": r.type, "minutes": r.minutes, "comment": r.comment} for r in rows]
 
 
+def get_activities_full(start_date: str, end_date: str) -> list[dict]:
+    """Активности с id — нужны там, где записи надо править, а не только показывать."""
+    with session_scope() as s:
+        rows = (
+            s.query(Activity)
+            .filter(Activity.date >= start_date, Activity.date <= end_date)
+            .order_by(Activity.id)
+            .all()
+        )
+        return [{"id": r.id, "date": r.date, "type": r.type, "minutes": r.minutes, "comment": r.comment}
+                for r in rows]
+
+
+def update_activity(activity_id: int, **fields):
+    allowed = {"type", "minutes", "comment"}
+    fields = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    with session_scope() as s:
+        row = s.get(Activity, activity_id)
+        if row:
+            for k, v in fields.items():
+                setattr(row, k, v)
+
+
+def delete_activity(activity_id: int) -> dict | None:
+    with session_scope() as s:
+        row = s.get(Activity, activity_id)
+        if not row:
+            return None
+        data = {"id": row.id, "date": row.date, "type": row.type, "minutes": row.minutes, "comment": row.comment}
+        s.delete(row)
+        return data
+
+
+def move_activity(activity_id: int, new_date: str) -> dict | None:
+    with session_scope() as s:
+        row = s.get(Activity, activity_id)
+        if not row:
+            return None
+        row.date = new_date
+        s.flush()
+        return {"id": row.id, "date": row.date, "type": row.type, "minutes": row.minutes, "comment": row.comment}
+
+
 def add_medication(date: str, drug: str, dosage: str | None = None):
     with session_scope() as s:
         s.add(Medication(date=date, drug=drug, dosage=dosage))

@@ -1,11 +1,16 @@
-from datetime import timedelta, datetime
+import asyncio
+import logging
+from datetime import date as date_cls, timedelta
 
 from app.repositories import chat_repo, daily_log_repo, event_repos, user_repo, meal_repo
 from app.services.ai import parser as ai_parser
 from app.services.ai import coach as ai_coach
+from app.services.ai import record_editor
 from app.services.ai import weekly_analyst
 from app.services.analytics import stats
 from app.utils import today_local, now_local
+
+logger = logging.getLogger(__name__)
 
 DAILY_LOG_KEYS = {
     "weight", "waist", "belly", "hips", "neck", "chest", "sleep_hours", "sleep_quality",
@@ -13,8 +18,17 @@ DAILY_LOG_KEYS = {
     "protein_g", "alcohol", "nutrition_event", "training", "comment",
 }
 
-MEAL_CORRECTION_WINDOW_MINUTES = 20
 DIALOG_MESSAGES_IN_CONTEXT = 20
+
+# Насколько глубоко в прошлое разрешено записывать и переносить события ("вчера", "позавчера").
+MAX_DAY_SHIFT_BACK = 7
+# Сколько дней показываем модели редактирования как правимые.
+EDITABLE_DAYS = 3
+# Предохранитель от массового удаления, если модель редактирования сойдёт с ума.
+MAX_EDIT_OPERATIONS = 10
+# Границы правдоподобия веса: всё, что вне их, скорее опечатка или обхват в см, чем реальный вес.
+PLAUSIBLE_WEIGHT_RANGE_KG = (40.0, 200.0)
+MAX_PLAUSIBLE_WEIGHT_JUMP_KG = 6.0
 
 WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
 
@@ -34,86 +48,244 @@ def _totals_line(totals: dict, user: dict) -> str:
     return line + "г"
 
 
-def _save_parsed_meals(parsed: dict, today: str) -> str | None:
+def _shifted_date(base: date_cls, shift) -> str:
+    """Дата события с учётом «вчера»/«позавчера». Вперёд не пускаем, назад — не глубже недели."""
+    try:
+        shift = int(shift or 0)
+    except (TypeError, ValueError):
+        shift = 0
+    shift = max(-MAX_DAY_SHIFT_BACK, min(0, shift))
+    return (base + timedelta(days=shift)).isoformat()
+
+
+def _save_parsed_meals(parsed: dict, today_date: date_cls) -> str | None:
     """Еда, названная словами или голосом, тоже должна попадать в дневной итог."""
     meals = [m for m in (parsed.get("meals") or []) if m.get("dish")]
     if not meals:
         return None
+    today = today_date.isoformat()
+    added_today, added_other = [], []
     for m in meals:
+        target_date = _shifted_date(today_date, m.get("day_shift"))
         meal_repo.add_meal(
-            today, description=m.get("dish"),
+            target_date, description=m.get("dish"),
             calories=m.get("calories") or 0, protein=m.get("protein") or 0,
             fat=m.get("fat") or 0, carbs=m.get("carbs") or 0,
             calcium=m.get("calcium") or 0, fiber=m.get("fiber") or 0,
         )
-    added_cal = sum(m.get("calories") or 0 for m in meals)
-    added_prot = sum(m.get("protein") or 0 for m in meals)
-    names = ", ".join(m["dish"] for m in meals)
+        (added_today if target_date == today else added_other).append((m, target_date))
+
+    lines = []
+    if added_today:
+        names = ", ".join(m["dish"] for m, _ in added_today)
+        cal = sum(m.get("calories") or 0 for m, _ in added_today)
+        prot = sum(m.get("protein") or 0 for m, _ in added_today)
+        lines.append(f"🍽 Записала: {names} — {cal:.0f} ккал, {prot:.0f}г белка.")
+    for m, target_date in added_other:
+        lines.append(f"🍽 Записала на {target_date}: {m['dish']} — {(m.get('calories') or 0):.0f} ккал.")
+
     totals = meal_repo.get_today_totals(today)
-    user = user_repo.get_user() or {}
-    return f"🍽 Записала: {names} — {added_cal:.0f} ккал, {added_prot:.0f}г белка.\n{_totals_line(totals, user)}"
+    if totals["count"]:
+        lines.append(_totals_line(totals, user_repo.get_user() or {}))
+    return "\n".join(lines)
 
 
-async def _try_meal_correction(text: str, today: str) -> str | None:
-    """Если недавно был записан приём пищи и сообщение похоже на поправку к нему — обновить его.
-    Возвращает текст ответа, если это была поправка, иначе None."""
-    recent_meal = meal_repo.get_latest_meal(today)
-    if not recent_meal:
-        return None
+def _describe_meal(row: dict) -> str:
+    return f"«{row.get('description') or 'без названия'}» ({(row.get('calories') or 0):.0f} ккал)"
+
+
+def _apply_edits(operations, allowed_dates: list[str],
+                 meal_ids: set, activity_ids: set) -> list[str]:
+    """Выполнить правки существующих записей. Возвращает список того, что реально сделано.
+
+    Отчитываемся только по фактически изменённым строкам: раньше бот сообщал об удалении
+    записей, которых не умел удалять, и цифры расходились с базой.
+    """
+    done = []
+    if not isinstance(operations, list):
+        return done
+    for op in operations[:MAX_EDIT_OPERATIONS]:
+        if not isinstance(op, dict):
+            continue
+        action, target, rec_id = op.get("action"), op.get("target"), op.get("id")
+        if not isinstance(rec_id, int):
+            continue
+        if target == "meal" and rec_id not in meal_ids:
+            continue
+        if target == "activity" and rec_id not in activity_ids:
+            continue
+        try:
+            if target == "meal":
+                if action == "delete":
+                    row = meal_repo.delete_meal(rec_id)
+                    if row:
+                        done.append(f"убрала {_describe_meal(row)}")
+                elif action == "move":
+                    new_date = op.get("new_date")
+                    if new_date in allowed_dates:
+                        row = meal_repo.move_meal(rec_id, new_date)
+                        if row:
+                            done.append(f"перенесла {_describe_meal(row)} на {new_date}")
+                elif action == "update":
+                    meal_repo.update_meal(
+                        rec_id, description=op.get("dish"), calories=op.get("calories"),
+                        protein=op.get("protein"), fat=op.get("fat"), carbs=op.get("carbs"),
+                        calcium=op.get("calcium"), fiber=op.get("fiber"),
+                    )
+                    row = meal_repo.get_meal_by_id(rec_id)
+                    if row:
+                        done.append(f"обновила {_describe_meal(row)}")
+            elif target == "activity":
+                if action == "delete":
+                    row = event_repos.delete_activity(rec_id)
+                    if row:
+                        done.append(f"убрала активность «{row.get('type')}»")
+                elif action == "move":
+                    new_date = op.get("new_date")
+                    if new_date in allowed_dates:
+                        row = event_repos.move_activity(rec_id, new_date)
+                        if row:
+                            done.append(f"перенесла «{row.get('type')}» на {new_date}")
+                elif action == "update":
+                    event_repos.update_activity(
+                        rec_id, type=op.get("type"), minutes=op.get("minutes"),
+                        comment=op.get("comment"),
+                    )
+                    done.append("обновила запись о тренировке")
+        except Exception:
+            logger.exception("Не удалось применить правку записи: %s", op)
+    return done
+
+
+WEIGHT_WARNING_MARKER = "⚠️ Вес"
+
+
+def _weight_already_questioned(weight: float, dialog: list[dict]) -> bool:
+    """Проверить, спрашивали ли уже про эту цифру сегодня.
+
+    Иначе получается тупик: бот отказывается записывать необычный вес и просит повторить,
+    а на повтор той же цифры отказывается снова.
+    """
+    for message in dialog:
+        if message.get("role") != "bot":
+            continue
+        text = message.get("text") or ""
+        if WEIGHT_WARNING_MARKER not in text:
+            continue
+        for token in text.replace(",", ".").split():
+            try:
+                mentioned = float(token)
+            except ValueError:
+                continue
+            if abs(mentioned - weight) < 0.5:
+                return True
+    return False
+
+
+def _check_weight(weight, history: list[dict], today: str, dialog: list[dict]) -> str | None:
+    """Отсечь явно неправдоподобный вес: обхват в см, принятый за килограммы, или опечатку.
+
+    Возвращает текст предупреждения, если запись делать нельзя, иначе None.
+    """
     try:
-        meal_time = datetime.fromisoformat(recent_meal["created_at"])
-    except (ValueError, TypeError):
+        weight = float(weight)
+    except (TypeError, ValueError):
         return None
-    if (now_local() - meal_time).total_seconds() > MEAL_CORRECTION_WINDOW_MINUTES * 60:
+    if _weight_already_questioned(weight, dialog):
         return None
-
-    correction = await ai_parser.detect_meal_correction(text, recent_meal)
-    if not correction.get("is_correction"):
-        return None
-
-    meal_repo.update_meal(
-        recent_meal["id"],
-        description=correction.get("dish"), calories=correction.get("calories"),
-        protein=correction.get("protein"), fat=correction.get("fat"),
-        carbs=correction.get("carbs"), calcium=correction.get("calcium"), fiber=correction.get("fiber"),
-    )
-    updated_meal = meal_repo.get_latest_meal(today) or recent_meal
-    totals = meal_repo.get_today_totals(today)
-    user = user_repo.get_user() or {}
-    line = f"Обновила: {updated_meal['description']} — {updated_meal['calories']:.0f} ккал, {updated_meal['protein']:.0f}г белка."
-    return f"{line}\n{_totals_line(totals, user)}"
+    low, high = PLAUSIBLE_WEIGHT_RANGE_KG
+    if not low <= weight <= high:
+        return (f"{WEIGHT_WARNING_MARKER} {weight:g} кг выглядит как опечатка или обхват в сантиметрах — "
+                f"не стала записывать. Напиши цифру ещё раз, если она верная.")
+    previous = next((row for row in reversed(history)
+                     if row.get("date") != today and row.get("weight") is not None), None)
+    if previous and abs(weight - previous["weight"]) > MAX_PLAUSIBLE_WEIGHT_JUMP_KG:
+        return (f"{WEIGHT_WARNING_MARKER} {weight:g} кг сильно отличается от последнего замера "
+                f"({previous['weight']:g} кг, {previous['date']}) — не стала записывать. "
+                f"Подтверди цифру, если она верная.")
+    return None
 
 
 async def process_message(text: str) -> str:
-    today = today_local().isoformat()
+    today_date = today_local()
+    today = today_date.isoformat()
     chat_repo.add("user", text, date=today)
 
-    correction_reply = await _try_meal_correction(text, today)
-    if correction_reply:
-        chat_repo.add("bot", correction_reply, date=today)
-        return correction_reply
+    allowed_dates = [(today_date - timedelta(days=i)).isoformat() for i in range(MAX_DAY_SHIFT_BACK + 1)]
+    editable_meals = []
+    for day in allowed_dates[:EDITABLE_DAYS]:
+        editable_meals.extend(meal_repo.get_meals_full(day))
+    editable_activities = event_repos.get_activities_full(allowed_dates[EDITABLE_DAYS - 1], today)
 
-    parsed = await ai_parser.parse(text)
-    meal_line = _save_parsed_meals(parsed, today)
+    # Правку существующих записей и разбор новых данных считаем параллельно,
+    # чтобы вторая проверка не удлиняла ответ бота.
+    if editable_meals or editable_activities:
+        plan, parsed = await asyncio.gather(
+            record_editor.plan_edits(text, editable_meals, editable_activities, allowed_dates),
+            ai_parser.parse(text),
+        )
+    else:
+        plan, parsed = {"message_kind": "new_entry", "operations": []}, await ai_parser.parse(text)
+
+    edits_done = _apply_edits(
+        plan.get("operations"), allowed_dates,
+        {m["id"] for m in editable_meals}, {a["id"] for a in editable_activities},
+    )
+
+    # Вопрос про уже посчитанное — это не новая еда. Раньше именно так рождались дубли:
+    # на «откуда тут 1050 ккал?» бот заводил ещё одну запись на 1050 ккал.
+    kind = plan.get("message_kind") or "new_entry"
+    if kind == "question":
+        accept_new_records = False
+    elif kind == "edit_request":
+        # Если правка почему-то не применилась, данные терять нельзя — записываем как обычно.
+        accept_new_records = not edits_done
+    else:
+        accept_new_records = True
+
+    meal_line = _save_parsed_meals(parsed, today_date) if accept_new_records else None
 
     daily_fields = {k: v for k, v in parsed.items() if k in DAILY_LOG_KEYS}
-    daily_log_repo.upsert(today, **daily_fields)
+    if not accept_new_records:
+        daily_fields.pop("comment", None)
+        daily_fields.pop("training", None)
+    weight_warning = None
+    if daily_fields.get("weight") is not None:
+        weight_warning = _check_weight(
+            daily_fields["weight"], daily_log_repo.get_history(limit=30), today,
+            chat_repo.get_today(today, limit=DIALOG_MESSAGES_IN_CONTEXT),
+        )
+        if weight_warning:
+            daily_fields.pop("weight")
+    if daily_fields:
+        daily_log_repo.upsert(today, **daily_fields)
 
-    for act in parsed.get("activities") or []:
-        event_repos.add_activity(today, act.get("type"), act.get("minutes"), act.get("comment"))
+    if accept_new_records:
+        for act in parsed.get("activities") or []:
+            event_repos.add_activity(
+                _shifted_date(today_date, act.get("day_shift")),
+                act.get("type"), act.get("minutes"), act.get("comment"),
+            )
 
-    for med in parsed.get("medications") or []:
-        event_repos.add_medication(today, med.get("drug"), med.get("dosage"))
+        for med in parsed.get("medications") or []:
+            event_repos.add_medication(today, med.get("drug"), med.get("dosage"))
 
-    for ctx in parsed.get("context_tags") or []:
-        event_repos.add_context(today, ctx.get("event_type"), ctx.get("description"))
+        for ctx in parsed.get("context_tags") or []:
+            event_repos.add_context(today, ctx.get("event_type"), ctx.get("description"))
 
-    illness = parsed.get("illness")
-    if illness and (illness.get("diagnosis") or illness.get("symptoms")):
-        event_repos.add_illness(today, illness.get("diagnosis"), illness.get("symptoms"))
+        illness = parsed.get("illness")
+        if illness and (illness.get("diagnosis") or illness.get("symptoms")):
+            event_repos.add_illness(today, illness.get("diagnosis"), illness.get("symptoms"))
 
-    if parsed.get("illness_resolved"):
-        event_repos.close_open_illness(today)
+        if parsed.get("illness_resolved"):
+            event_repos.close_open_illness(today)
+
+    edits_line = None
+    if edits_done:
+        edits_line = "✅ Поправила: " + "; ".join(edits_done) + "."
+        totals_after = meal_repo.get_today_totals(today)
+        if totals_after["count"]:
+            edits_line += "\n" + _totals_line(totals_after, user_repo.get_user() or {})
 
     today_state = daily_log_repo.get_by_date(today) or {"date": today}
     history = daily_log_repo.get_history(limit=30)
@@ -135,9 +307,11 @@ async def process_message(text: str) -> str:
         today_state, history, goal, insights, user, text, baseline,
         now=_now_human(), meals=meals, meal_totals=meal_totals,
         activities=activities, dialog=dialog,
+        applied_edits=edits_done, weight_warning=weight_warning,
     )
-    if meal_line:
-        reply = f"{meal_line}\n\n{reply}"
+    header = [line for line in (edits_line, meal_line, weight_warning) if line]
+    if header:
+        reply = "\n\n".join(header + [reply])
     chat_repo.add("bot", reply, date=today)
     return reply
 

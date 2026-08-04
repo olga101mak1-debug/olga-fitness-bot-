@@ -22,6 +22,18 @@ def _build_system(user: dict) -> str:
 — Учитывай текущее время: не называй дневную еду завтраком, не желай доброго утра днём и вечером.
 — Всё, что уже записано за сегодня (еда, тренировки, замеры), считай известным и не спрашивай об этом снова.
 
+ПРО ЗАПИСИ В ДНЕВНИКЕ — важнее всего остального:
+— Ты не редактируешь записи сама. Всё, что уже изменено, перечислено в блоке «Только что изменено в записях».
+  Если блока нет — значит НИЧЕГО не менялось.
+— Никогда не пиши «уберу», «удалю», «перенесу», «исправлю», «не буду считать», «пересчитаю» про записи.
+  Это обещания, которые ты не можешь выполнить, и цифры потом расходятся с дневником.
+— Никогда не называй свой итог за день, отличный от того, что дан в «Итого по еде за сегодня».
+  Если тебе кажется, что в записях дубль или ошибка — не пересчитывай молча в уме и не объявляй
+  «на самом деле было столько-то». Вместо этого коротко спроси: «Похоже, вот это задвоилось — убрать?»
+  Пользователь ответит, и запись действительно поправится на следующем шаге.
+— Если пользователь просит что-то удалить или перенести, а в блоке изменений этого нет — честно скажи,
+  что не смогла разобрать, какую именно запись убрать, и попроси назвать её точнее.
+
 Если не хватает по-настоящему важной информации за сегодня — задай не более {MAX_CLARIFYING_QUESTIONS}
 уточняющих вопросов, максимально коротких. Никогда не спрашивай то, что уже записано сегодня (см. "Уже известно за сегодня").
 Если всё важное уже есть — просто дай тёплый, конкретный отклик на день, без вопросов.
@@ -42,11 +54,19 @@ def _format_dialog(dialog: list[dict]) -> str:
 def _format_context(today: dict, history: list[dict], goal: dict | None, insights: list[dict],
                      baseline: dict | None = None, now: str | None = None,
                      meals: list[dict] | None = None, meal_totals: dict | None = None,
-                     activities: list[dict] | None = None, dialog: list[dict] | None = None) -> str:
+                     activities: list[dict] | None = None, dialog: list[dict] | None = None,
+                     applied_edits: list[str] | None = None, weight_warning: str | None = None) -> str:
     known = {k: v for k, v in today.items() if v is not None and k != "date"}
     lines = []
     if now:
         lines.append(f"Сейчас: {now}. Ориентируйся на это время суток.")
+    if applied_edits:
+        lines.append("Только что изменено в записях (это уже сделано, можешь на это опираться): "
+                     + "; ".join(applied_edits)
+                     + ". Не обещай сделать это ещё раз и не предлагай «убрать» то, что уже убрано.")
+    if weight_warning:
+        lines.append("Вес из последнего сообщения НЕ записан, пользователю уже показано предупреждение: "
+                     + weight_warning + " Не повторяй это предупреждение своими словами.")
     lines.append(f"Сегодня ({today.get('date')}), уже известно за сегодня: {json.dumps(known, ensure_ascii=False)}")
     if meals:
         lines.append(f"Приёмы пищи, уже записанные за сегодня: {json.dumps(meals, ensure_ascii=False)}")
@@ -83,8 +103,11 @@ async def generate_reply(today: dict, history: list[dict], goal: dict | None,
                           insights: list[dict], user: dict, user_message: str,
                           baseline: dict | None = None, now: str | None = None,
                           meals: list[dict] | None = None, meal_totals: dict | None = None,
-                          activities: list[dict] | None = None, dialog: list[dict] | None = None) -> str:
+                          activities: list[dict] | None = None, dialog: list[dict] | None = None,
+                          applied_edits: list[str] | None = None,
+                          weight_warning: str | None = None) -> str:
     context = _format_context(today, history, goal, insights, baseline, now=now, meals=meals,
-                               meal_totals=meal_totals, activities=activities, dialog=dialog)
+                               meal_totals=meal_totals, activities=activities, dialog=dialog,
+                               applied_edits=applied_edits, weight_warning=weight_warning)
     prompt = f"{context}\n\nСообщение пользователя только что: \"{user_message}\"\n\nНапиши ответ."
     return await call_text(_build_system(user), prompt, max_tokens=2000)
