@@ -4,6 +4,7 @@ from aiogram import Router, F
 from aiogram.types import Message
 
 from app.services.ai import vision
+from app.services import life_service
 from app.repositories import chat_repo, event_repos, meal_repo, user_repo
 from app.utils import today_local
 
@@ -149,6 +150,15 @@ async def _handle_photos(messages: list[Message]):
         event_repos.add_activity(today, "силовая", None, comment)
         event_repos.add_photo(today, "workout_log", photos[0].file_id, note=result.get("summary"))
         await _reply(first, f"🏋️ {result.get('recommendation', '')}")
+        return
+
+    if kind == "body_composition":
+        # Отчёт анализатора — это ДАННЫЕ, а не картинка. Раньше он попадал в body_photo
+        # и сохранялся только как фото с подписью, поэтому вес и состав тела терялись.
+        report = result.get("body_composition") or {}
+        text = life_service.save_body_composition(report, summary=result.get("summary"))
+        event_repos.add_photo(today, "body_composition", photos[0].file_id, note=result.get("summary"))
+        await _reply(first, text)
         return
 
     if kind == "body_photo":

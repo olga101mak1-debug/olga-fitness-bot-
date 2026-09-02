@@ -95,7 +95,9 @@ def _compact_history(history: list[dict], meal_days: list[dict],
         row = {"date": date}
         for field in ("weight", "waist", "belly", "hips", "neck", "chest", "sleep_hours",
                       "sleep_quality", "energy", "mood", "stress", "work_hours", "steps",
-                      "water_liters", "alcohol", "nutrition_event", "training", "comment"):
+                      "water_liters", "alcohol", "nutrition_event", "training", "comment",
+                      "body_fat_pct", "fat_mass_kg", "muscle_mass_kg", "fat_free_mass_kg",
+                      "body_water_l", "visceral_fat_level", "bmr_kcal"):
             value = day.get(field)
             if value is not None:
                 row[field] = value

@@ -7,8 +7,9 @@ from app.services.ai import parser as ai_parser
 from app.services.ai import coach as ai_coach
 from app.services.ai import record_editor
 from app.services.ai import weekly_analyst
-from app.services.analytics import stats, overview, exports
+from app.services.analytics import stats, overview, exports, body_composition
 from app.services.charts import dashboard
+from app.database.models import DailyLog
 from app.utils import today_local, now_local
 
 logger = logging.getLogger(__name__)
@@ -271,6 +272,38 @@ def _check_measurement(field: str, value, history: list[dict], today: str,
                 f"({previous[field]:g} см, {previous['date']}) — не стала записывать. "
                 f"Подтверди цифру, если она верная.")
     return None
+
+
+def save_body_composition(report: dict, summary: str | None = None) -> str:
+    """Записать отчёт анализатора состава тела в дневник и честно сказать, что не записано.
+
+    Показатели проходят проверку достоверности: замер с неверно введённым ростом даёт
+    физически невозможные цифры, и записывать из него можно только вес.
+    """
+    today_date = today_local()
+    today = today_date.isoformat()
+    user = user_repo.get_user() or {}
+    clean, problems = body_composition.validate(report, user)
+
+    # Вес из отчёта проходит ту же проверку, что и названный словами.
+    if clean.get("weight") is not None:
+        warning = _check_weight(clean["weight"], daily_log_repo.get_history(limit=30), today,
+                                chat_repo.get_today(today, limit=DIALOG_MESSAGES_IN_CONTEXT))
+        if warning:
+            clean.pop("weight")
+            problems.append(warning.replace(WEIGHT_WARNING_MARKER, "вес").strip())
+
+    fields = {k: v for k, v in clean.items() if k in DailyLog.FIELDS}
+    if fields:
+        daily_log_repo.upsert(today, **fields)
+    if summary:
+        event_repos.add_insight(today, "состав тела", summary, confidence="medium")
+
+    text = body_composition.format_result(clean, problems, user)
+    if not fields:
+        text = (text + "\n\nИз этого отчёта записывать нечего — замер стоит переделать."). strip()
+    chat_repo.add("bot", text, date=today)
+    return text
 
 
 def collect_overview(today_date: date_cls | None = None) -> dict:

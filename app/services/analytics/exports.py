@@ -9,6 +9,10 @@ import io
 DAY_COLUMNS = [
     ("date", "Дата"), ("weight", "Вес, кг"), ("waist", "Талия, см"), ("belly", "Живот, см"),
     ("hips", "Бёдра, см"), ("neck", "Шея, см"), ("chest", "Грудь, см"),
+    ("body_fat_pct", "Жир, %"), ("fat_mass_kg", "Масса жира, кг"),
+    ("muscle_mass_kg", "Мышцы, кг"), ("fat_free_mass_kg", "Безжировая масса, кг"),
+    ("body_water_l", "Вода, л"), ("visceral_fat_level", "Висцеральный жир"),
+    ("bmr_kcal", "Базовый обмен, ккал"),
     ("calories", "Калории"), ("protein", "Белок, г"), ("fat", "Жиры, г"), ("carbs", "Углеводы, г"),
     ("meals_count", "Приёмов пищи"), ("training", "Активность"),
     ("sleep_hours", "Сон, ч"), ("sleep_quality", "Качество сна"), ("energy", "Энергия"),

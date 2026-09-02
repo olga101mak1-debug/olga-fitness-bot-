@@ -6,7 +6,18 @@ from app.config import CLAUDE_MODEL
 VISION_SYSTEM = """Ты — LIFE AI, персональный помощник по здоровью и образу жизни.
 Тебе присылают фото — это может быть: скрин журнала силовой тренировки (таблица/список упражнений,
 подходов, повторений, весов), фото еды/блюда (оцени нутриенты на всю видимую порцию), фото тела для
-отслеживания прогресса (фигура целиком, ракурс спереди/сбоку/сзади), либо что-то не по теме.
+отслеживания прогресса (фигура целиком, ракурс спереди/сбоку/сзади), РАСПЕЧАТКА АНАЛИЗАТОРА СОСТАВА
+ТЕЛА (InBody, Tanita, умные весы — бланк с цифрами: вес, PBF/процент жира, SMM/мышечная масса, вода,
+BMI, базовый обмен), либо что-то не по теме.
+
+ПРО ОТЧЁТ АНАЛИЗАТОРА СОСТАВА ТЕЛА — это kind="body_composition", а НЕ body_photo:
+— Переписывай цифры РОВНО так, как они напечатаны. Ничего не пересчитывай, не исправляй и не
+  «улучшай», даже если значение выглядит невозможным. Проверку достоверности делает не ты.
+— ОБЯЗАТЕЛЬНО найди и перепиши поле роста (Height) из шапки бланка в reported_height_cm.
+  Это ключевая проверка: если в аппарат ввели неверный рост, все расчёты в отчёте неверны,
+  и поймать это можно только по этому полю.
+— Дату и время замера из шапки перепиши в measured_at.
+— Если какого-то показателя в бланке нет — просто не заполняй поле, не подставляй похожее.
 Определи тип и дай содержательный отклик. Без осуждающего тона, без "вы нарушили/следует" — только
 поддержка и конкретные наблюдения. Если это фото тела и дано фото для сравнения — сравнивай визуально
 конкретные изменения (осанка, рельеф, объёмы на глаз), а не просто хвали. Если это еда — оценивай честно,
@@ -22,7 +33,7 @@ PHOTO_TOOL = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "kind": {"type": "string", "enum": ["workout_log", "food_photo", "body_photo", "other"]},
+            "kind": {"type": "string", "enum": ["workout_log", "food_photo", "body_photo", "body_composition", "other"]},
             "exercises": {
                 "type": "array",
                 "description": "Только для workout_log — распознанные упражнения",
@@ -48,6 +59,23 @@ PHOTO_TOOL = {
                     "carbs": {"type": "number"},
                     "calcium": {"type": "number", "description": "мг"},
                     "fiber": {"type": "number", "description": "г"},
+                },
+            },
+            "body_composition": {
+                "type": "object",
+                "description": "Только для body_composition — цифры с бланка анализатора, переписанные как есть",
+                "properties": {
+                    "reported_height_cm": {"type": "number", "description": "Рост из шапки бланка (Height). Переписать обязательно, даже если выглядит странно"},
+                    "measured_at": {"type": "string", "description": "Дата и время замера из шапки, как напечатано"},
+                    "weight": {"type": "number", "description": "Вес, кг"},
+                    "body_fat_pct": {"type": "number", "description": "PBF / процент жира, %"},
+                    "fat_mass_kg": {"type": "number", "description": "Body Fat Mass, кг"},
+                    "muscle_mass_kg": {"type": "number", "description": "SMM / скелетная мышечная масса, кг"},
+                    "fat_free_mass_kg": {"type": "number", "description": "Fat Free Mass / безжировая масса, кг"},
+                    "body_water_l": {"type": "number", "description": "Total Body Water, литры"},
+                    "visceral_fat_level": {"type": "number", "description": "Уровень висцерального жира"},
+                    "bmr_kcal": {"type": "number", "description": "Basal Metabolic Rate, ккал"},
+                    "reported_bmi": {"type": "number", "description": "BMI, как напечатан в бланке"},
                 },
             },
             "summary": {"type": "string", "description": "Короткая сводка одной строкой (название блюда/сводка тренировки/наблюдение по фигуре)"},

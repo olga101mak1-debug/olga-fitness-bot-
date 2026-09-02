@@ -35,6 +35,17 @@ WELLBEING_FIELDS = {
 # Ниже этого числа замеров считать среднее и тренд бессмысленно — это шум, а не картина.
 MIN_POINTS_FOR_TREND = 3
 
+# Состав тела с анализатора: меняется медленно, поэтому важнее не среднее, а «было → стало».
+BODY_COMPOSITION_FIELDS = {
+    "body_fat_pct": "жир, %",
+    "fat_mass_kg": "масса жира, кг",
+    "muscle_mass_kg": "мышцы, кг",
+    "fat_free_mass_kg": "безжировая масса, кг",
+    "body_water_l": "вода, л",
+    "visceral_fat_level": "висцеральный жир",
+    "bmr_kcal": "базовый обмен, ккал",
+}
+
 
 def _to_date(value) -> date_cls | None:
     if isinstance(value, date_cls):
@@ -155,6 +166,26 @@ def _measurements_block(history: list[dict], today: date_cls) -> dict:
             "current_cm": points[-1][1],
             "total_delta_cm": round(points[-1][1] - points[0][1], 2),
             "delta_30d_cm": _change(_window(points, today, 30)),
+            "days_since_last": (today - points[-1][0]).days,
+            "measurements_count": len(points),
+        }
+    return result
+
+
+def _body_composition_block(history: list[dict], today: date_cls) -> dict:
+    """Первый и последний замер состава тела и разница между ними."""
+    result = {}
+    for field, label in BODY_COMPOSITION_FIELDS.items():
+        points = _series(history, field)
+        if not points:
+            continue
+        result[field] = {
+            "label": label,
+            "first_date": points[0][0].isoformat(),
+            "first_value": points[0][1],
+            "current_date": points[-1][0].isoformat(),
+            "current_value": points[-1][1],
+            "total_delta": round(points[-1][1] - points[0][1], 2) if len(points) > 1 else None,
             "days_since_last": (today - points[-1][0]).days,
             "measurements_count": len(points),
         }
@@ -299,6 +330,7 @@ def build_overview(history: list[dict], meal_days: list[dict], activities: list[
                                   if any(v is not None for k, v in r.items() if k != "date")]),
         "weight": weight,
         "measurements": _measurements_block(history, today),
+        "body_composition": _body_composition_block(history, today),
         "nutrition": nutrition,
         "wellbeing": wellbeing,
         "activity": _activity_block(activities or [], today),
@@ -358,6 +390,17 @@ def format_overview_text(ov: dict) -> str:
             lines.append(f"• {data['label'].capitalize()}: {_fmt(data['current_cm'])} "
                          f"(с начала {_fmt(data['total_delta_cm'], signed=True)}, "
                          f"за 30 дн. {_fmt(data.get('delta_30d_cm'), signed=True)})")
+
+    composition = ov.get("body_composition") or {}
+    if composition:
+        lines.append("")
+        lines.append("🧬 СОСТАВ ТЕЛА (с анализатора)")
+        for data in composition.values():
+            row = f"• {data['label'].capitalize()}: {_fmt(data['current_value'])}"
+            if data.get("total_delta") is not None:
+                row += f" (с первого замера {_fmt(data['total_delta'], signed=True)})"
+            row += f" — замер {data['current_date']}"
+            lines.append(row)
 
     n = ov.get("nutrition") or {}
     if n.get("has_data"):

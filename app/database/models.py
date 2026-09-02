@@ -68,11 +68,24 @@ class DailyLog(Base):
     training = Column(Text)
     comment = Column(Text)
 
+    # Состав тела с анализатора (InBody, Tanita, умные весы). Раньше такие отчёты
+    # сохранялись только картинкой с текстовой подписью — цифры в дневник не попадали,
+    # поэтому вес и состав тела из замера терялись.
+    body_fat_pct = Column(Float)        # PBF, %
+    fat_mass_kg = Column(Float)         # масса жира
+    muscle_mass_kg = Column(Float)      # скелетная мышечная масса (SMM)
+    fat_free_mass_kg = Column(Float)    # безжировая масса (FFM)
+    body_water_l = Column(Float)        # общая вода в организме
+    visceral_fat_level = Column(Float)  # уровень висцерального жира
+    bmr_kcal = Column(Float)            # базовый обмен веществ
+
     FIELDS = [
         "weight", "waist", "belly", "hips", "neck", "chest",
         "sleep_hours", "sleep_quality", "energy", "mood", "stress",
         "work_hours", "work_load", "steps", "water_liters", "protein_g",
         "alcohol", "nutrition_event", "training", "comment",
+        "body_fat_pct", "fat_mass_kg", "muscle_mass_kg", "fat_free_mass_kg",
+        "body_water_l", "visceral_fat_level", "bmr_kcal",
     ]
 
 
