@@ -115,7 +115,7 @@ def _format_context(today: dict, history: list[dict], goal: dict | None, insight
                      baseline: dict | None = None, now: str | None = None,
                      meals: list[dict] | None = None, meal_totals: dict | None = None,
                      activities: list[dict] | None = None, dialog: list[dict] | None = None,
-                     applied_edits: list[str] | None = None, weight_warning: str | None = None,
+                     applied_edits: list[str] | None = None, data_warning: str | None = None,
                      overview: dict | None = None, meal_days: list[dict] | None = None,
                      period_activities: list[dict] | None = None) -> str:
     known = {k: v for k, v in today.items() if v is not None and k != "date"}
@@ -126,9 +126,11 @@ def _format_context(today: dict, history: list[dict], goal: dict | None, insight
         lines.append("Только что изменено в записях (это уже сделано, можешь на это опираться): "
                      + "; ".join(applied_edits)
                      + ". Не обещай сделать это ещё раз и не предлагай «убрать» то, что уже убрано.")
-    if weight_warning:
-        lines.append("Вес из последнего сообщения НЕ записан, пользователю уже показано предупреждение: "
-                     + weight_warning + " Не повторяй это предупреждение своими словами.")
+    if data_warning:
+        lines.append("Эти цифры из последнего сообщения НЕ записаны — они выбиваются из ряда и похожи "
+                     "на опечатку. Пользователю уже показано предупреждение:\n" + data_warning
+                     + "\nНе повторяй это предупреждение своими словами и не считай эти цифры "
+                       "записанными. Если она подтвердит цифру — запись пройдёт на следующем шаге.")
 
     if overview:
         lines.append(
@@ -178,12 +180,12 @@ async def generate_reply(today: dict, history: list[dict], goal: dict | None,
                           meals: list[dict] | None = None, meal_totals: dict | None = None,
                           activities: list[dict] | None = None, dialog: list[dict] | None = None,
                           applied_edits: list[str] | None = None,
-                          weight_warning: str | None = None,
+                          data_warning: str | None = None,
                           overview: dict | None = None, meal_days: list[dict] | None = None,
                           period_activities: list[dict] | None = None) -> str:
     context = _format_context(today, history, goal, insights, baseline, now=now, meals=meals,
                                meal_totals=meal_totals, activities=activities, dialog=dialog,
-                               applied_edits=applied_edits, weight_warning=weight_warning,
+                               applied_edits=applied_edits, data_warning=data_warning,
                                overview=overview, meal_days=meal_days,
                                period_activities=period_activities)
     prompt = f"{context}\n\nСообщение пользователя только что: \"{user_message}\"\n\nНапиши ответ."

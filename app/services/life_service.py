@@ -34,6 +34,11 @@ MAX_EDIT_OPERATIONS = 10
 # Границы правдоподобия веса: всё, что вне их, скорее опечатка или обхват в см, чем реальный вес.
 PLAUSIBLE_WEIGHT_RANGE_KG = (40.0, 200.0)
 MAX_PLAUSIBLE_WEIGHT_JUMP_KG = 6.0
+# То же для обхватов: 5 см между замерами — уже не изменение тела, а почти наверняка опечатка.
+PLAUSIBLE_MEASUREMENT_RANGE_CM = (20.0, 200.0)
+MAX_PLAUSIBLE_MEASUREMENT_JUMP_CM = 5.0
+MEASUREMENT_LABELS = {"waist": "талия", "belly": "живот", "hips": "бёдра",
+                      "neck": "шея", "chest": "грудь"}
 
 WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
 
@@ -188,28 +193,34 @@ def _apply_edits(operations, allowed_dates: list[str],
 
 
 WEIGHT_WARNING_MARKER = "⚠️ Вес"
+MEASUREMENT_WARNING_MARKER = "⚠️ Замер"
 
 
-def _weight_already_questioned(weight: float, dialog: list[dict]) -> bool:
+def _already_questioned(value: float, dialog: list[dict], marker: str) -> bool:
     """Проверить, спрашивали ли уже про эту цифру сегодня.
 
-    Иначе получается тупик: бот отказывается записывать необычный вес и просит повторить,
+    Иначе получается тупик: бот отказывается записывать необычную цифру и просит повторить,
     а на повтор той же цифры отказывается снова.
     """
     for message in dialog:
         if message.get("role") != "bot":
             continue
         text = message.get("text") or ""
-        if WEIGHT_WARNING_MARKER not in text:
+        if marker not in text:
             continue
         for token in text.replace(",", ".").split():
             try:
                 mentioned = float(token)
             except ValueError:
                 continue
-            if abs(mentioned - weight) < 0.5:
+            if abs(mentioned - value) < 0.5:
                 return True
     return False
+
+
+def _previous_value(field: str, history: list[dict], today: str) -> dict | None:
+    return next((row for row in reversed(history)
+                 if row.get("date") != today and row.get(field) is not None), None)
 
 
 def _check_weight(weight, history: list[dict], today: str, dialog: list[dict]) -> str | None:
@@ -221,17 +232,43 @@ def _check_weight(weight, history: list[dict], today: str, dialog: list[dict]) -
         weight = float(weight)
     except (TypeError, ValueError):
         return None
-    if _weight_already_questioned(weight, dialog):
+    if _already_questioned(weight, dialog, WEIGHT_WARNING_MARKER):
         return None
     low, high = PLAUSIBLE_WEIGHT_RANGE_KG
     if not low <= weight <= high:
         return (f"{WEIGHT_WARNING_MARKER} {weight:g} кг выглядит как опечатка или обхват в сантиметрах — "
                 f"не стала записывать. Напиши цифру ещё раз, если она верная.")
-    previous = next((row for row in reversed(history)
-                     if row.get("date") != today and row.get("weight") is not None), None)
+    previous = _previous_value("weight", history, today)
     if previous and abs(weight - previous["weight"]) > MAX_PLAUSIBLE_WEIGHT_JUMP_KG:
         return (f"{WEIGHT_WARNING_MARKER} {weight:g} кг сильно отличается от последнего замера "
                 f"({previous['weight']:g} кг, {previous['date']}) — не стала записывать. "
+                f"Подтверди цифру, если она верная.")
+    return None
+
+
+def _check_measurement(field: str, value, history: list[dict], today: str,
+                       dialog: list[dict]) -> str | None:
+    """Та же защита, что у веса, но для обхватов.
+
+    Появилась после того, как в базу молча попала талия 89 см между замерами 82 и 83 —
+    опечатка искажала и график, и дельты, пока её не заметили глазами.
+    """
+    label = MEASUREMENT_LABELS.get(field, field)
+    marker = f"{MEASUREMENT_WARNING_MARKER} {label}"
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if _already_questioned(value, dialog, marker):
+        return None
+    low, high = PLAUSIBLE_MEASUREMENT_RANGE_CM
+    if not low <= value <= high:
+        return (f"{marker} {value:g} см не похож на обхват — не стала записывать. "
+                f"Напиши цифру ещё раз, если она верная.")
+    previous = _previous_value(field, history, today)
+    if previous and abs(value - previous[field]) > MAX_PLAUSIBLE_MEASUREMENT_JUMP_CM:
+        return (f"{marker} {value:g} см сильно отличается от прошлого замера "
+                f"({previous[field]:g} см, {previous['date']}) — не стала записывать. "
                 f"Подтверди цифру, если она верная.")
     return None
 
@@ -339,14 +376,24 @@ async def process_message(text: str) -> str:
     if not accept_new_records:
         daily_fields.pop("comment", None)
         daily_fields.pop("training", None)
-    weight_warning = None
+    # Цифры, которые выбиваются из ряда, не записываем молча: один раз так в базу попала
+    # талия 89 см между замерами 82 и 83 и полтора месяца искажала график.
+    warnings = []
+    recent_history = daily_log_repo.get_history(limit=30)
+    today_dialog = chat_repo.get_today(today, limit=DIALOG_MESSAGES_IN_CONTEXT)
     if daily_fields.get("weight") is not None:
-        weight_warning = _check_weight(
-            daily_fields["weight"], daily_log_repo.get_history(limit=30), today,
-            chat_repo.get_today(today, limit=DIALOG_MESSAGES_IN_CONTEXT),
-        )
-        if weight_warning:
+        warning = _check_weight(daily_fields["weight"], recent_history, today, today_dialog)
+        if warning:
             daily_fields.pop("weight")
+            warnings.append(warning)
+    for field in MEASUREMENT_LABELS:
+        if daily_fields.get(field) is None:
+            continue
+        warning = _check_measurement(field, daily_fields[field], recent_history, today, today_dialog)
+        if warning:
+            daily_fields.pop(field)
+            warnings.append(warning)
+    data_warning = "\n".join(warnings) if warnings else None
     if daily_fields:
         daily_log_repo.upsert(today, **daily_fields)
 
@@ -404,10 +451,10 @@ async def process_message(text: str) -> str:
         today_state, history, goal, insights, user, text, baseline,
         now=_now_human(), meals=meals, meal_totals=meal_totals,
         activities=activities, dialog=dialog,
-        applied_edits=edits_done, weight_warning=weight_warning,
+        applied_edits=edits_done, data_warning=data_warning,
         overview=stats_overview, meal_days=meal_days, period_activities=period_activities,
     )
-    header = [line for line in (edits_line, meal_line, weight_warning) if line]
+    header = [line for line in (edits_line, meal_line, data_warning) if line]
     if header:
         reply = "\n\n".join(header + [reply])
     chat_repo.add("bot", reply, date=today)
