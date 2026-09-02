@@ -462,7 +462,8 @@ const S = (v, d=1) => v === null || v === undefined ? '—' : (v > 0 ? '+' : '')
 const MONTHS = ['январь','февраль','март','апрель','май','июнь','июль','август','сентябрь','октябрь','ноябрь','декабрь'];
 const MONTHS_SHORT = ['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
 
-const state = { period: 'all', week: null, tab: 'weight' };
+// Месяцы копятся набором: их можно выбрать несколько сразу и сравнить период целиком.
+const state = { months: new Set(), week: null, tab: 'weight' };
 
 function parseDate(s) { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); }
 function fmtDay(s) { const d = parseDate(s); return d.getDate() + '.' + String(d.getMonth() + 1).padStart(2, '0'); }
@@ -500,13 +501,15 @@ function weeksOf(monthKey) {
   });
 }
 
+function selectedMonths() { return [...state.months].sort(); }
+
 function selectedDays() {
-  if (state.period === 'all') return DATA.days;
-  if (state.week) {
-    const w = weeksOf(state.period).find(x => x.key === state.week);
+  if (!state.months.size) return DATA.days;
+  if (state.week && state.months.size === 1) {
+    const w = weeksOf(selectedMonths()[0]).find(x => x.key === state.week);
     return w ? w.days : [];
   }
-  return DATA.days.filter(d => d.d.startsWith(state.period));
+  return DATA.days.filter(d => state.months.has(d.d.slice(0, 7)));
 }
 
 /* Календарных дней в периоде. Считать покрытие от числа ЗАПИСАННЫХ дней нельзя:
@@ -514,27 +517,38 @@ function selectedDays() {
 function periodSpanDays() {
   const today = parseDate(DATA.today);
   let from, to;
-  if (state.period === 'all') {
+  if (!state.months.size) {
     from = parseDate(DATA.days[0].d); to = today;
-  } else if (state.week) {
+  } else if (state.week && state.months.size === 1) {
     from = parseDate(state.week);
     to = new Date(from); to.setDate(from.getDate() + 6);
   } else {
-    const [y, m] = state.period.split('-').map(Number);
-    from = new Date(y, m - 1, 1); to = new Date(y, m, 0);
+    /* Несколько месяцев: складываем их календарные длины, а не расстояние между краями —
+       иначе пропуск между выбранными месяцами посчитался бы как период наблюдения. */
+    let sum = 0;
+    selectedMonths().forEach(k => {
+      const [y, m] = k.split('-').map(Number);
+      let a = new Date(y, m - 1, 1), b = new Date(y, m, 0);
+      if (b > today) b = today;
+      if (a <= b) sum += Math.round((b - a) / 86400000) + 1;
+    });
+    return Math.max(1, sum);
   }
   if (to > today) to = today;
   return Math.max(1, Math.round((to - from) / 86400000) + 1);
 }
 
 function periodLabel() {
-  if (state.period === 'all') return 'за всё время наблюдений';
-  if (state.week) {
-    const w = weeksOf(state.period).find(x => x.key === state.week);
+  if (!state.months.size) return 'за всё время наблюдений';
+  const keys = selectedMonths();
+  if (state.week && keys.length === 1) {
+    const w = weeksOf(keys[0]).find(x => x.key === state.week);
     if (w) return 'за неделю ' + w.label;
   }
-  const [y, m] = state.period.split('-');
-  return 'за ' + MONTHS[Number(m) - 1] + ' ' + y;
+  const names = keys.map(k => MONTHS[Number(k.slice(5, 7)) - 1].toLowerCase() + ' ' + k.slice(0, 4));
+  if (names.length === 1) return 'за ' + names[0];
+  if (names.length === 2) return 'за ' + names[0] + ' и ' + names[1];
+  return 'за ' + names.length + ' мес.: ' + names.join(', ');
 }
 
 const val = (days, key) => days.filter(d => d[key] !== undefined && d[key] !== null).map(d => ({ x: d.d, y: d[key] }));
@@ -847,16 +861,23 @@ function renderVerdict(days) {
 
 function renderPickers() {
   const ms = months();
-  const chips = [`<button class="chip ${state.period === 'all' ? 'on' : ''}" data-period="all">Всё время</button>`]
-    .concat(ms.map(m => `<button class="chip ${state.period === m.key ? 'on' : ''}" data-period="${m.key}">${m.label}</button>`));
-  let html = `<div class="label">Период</div><div class="chips">${chips.join('')}</div>`;
-  if (state.period !== 'all') {
-    const ws = weeksOf(state.period);
+  const chips = [`<button class="chip ${!state.months.size ? 'on' : ''}" data-period="all">Всё время</button>`]
+    .concat(ms.map(m => `<button class="chip ${state.months.has(m.key) ? 'on' : ''}" data-period="${m.key}">${m.label}</button>`));
+  const hint = state.months.size
+    ? 'нажми ещё месяц, чтобы сложить период; повторное нажатие снимает'
+    : 'можно выбрать несколько месяцев сразу';
+  let html = `<div class="label">Период <span style="text-transform:none;letter-spacing:0">— ${hint}</span></div>`
+           + `<div class="chips">${chips.join('')}</div>`;
+  const keys = selectedMonths();
+  if (keys.length === 1) {
+    const ws = weeksOf(keys[0]);
     if (ws.length) {
       const wchips = [`<button class="chip ${!state.week ? 'on' : ''}" data-week="">Весь месяц</button>`]
         .concat(ws.map(w => `<button class="chip ${state.week === w.key ? 'on' : ''}" data-week="${w.key}">${w.label} <span style="opacity:.65">· ${w.records} дн.</span></button>`));
       html += `<div class="weeks"><div class="label">Неделя внутри месяца</div><div class="chips">${wchips.join('')}</div></div>`;
     }
+  } else if (keys.length > 1) {
+    html += `<div class="weeks"><div class="label">Недели доступны, когда выбран один месяц</div></div>`;
   }
   return html;
 }
@@ -883,7 +904,14 @@ function render() {
 document.addEventListener('click', e => {
   const b = e.target.closest('button');
   if (!b) return;
-  if (b.dataset.period !== undefined) { state.period = b.dataset.period; state.week = null; render(); }
+  if (b.dataset.period !== undefined) {
+    const key = b.dataset.period;
+    if (key === 'all') state.months.clear();
+    else if (state.months.has(key)) state.months.delete(key);
+    else state.months.add(key);
+    state.week = null;
+    render();
+  }
   else if (b.dataset.week !== undefined) { state.week = b.dataset.week || null; render(); }
   else if (b.dataset.tab) { state.tab = b.dataset.tab; render(); }
 });
