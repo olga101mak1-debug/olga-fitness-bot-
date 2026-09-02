@@ -290,6 +290,48 @@ def _monthly_table(days: list[dict], user: dict) -> str:
         + "".join(rows) + '</table></div></section>')
 
 
+def _activity_block(days: list[dict], today: str) -> str:
+    """Тренировки в версии без скриптов: в Telegram вкладок нет, а видеть их надо."""
+    with_act = [d for d in days if d.get("act")]
+    if not with_act:
+        return ('<section><h2>Тренировки</h2>'
+                '<p class="empty">За всё время тренировок не записано</p></section>')
+
+    by_type: dict[str, int] = {}
+    for day in with_act:
+        for entry in day["act"]:
+            name = entry.split(" ")[0] if entry else "тренировка"
+            by_type[name] = by_type.get(name, 0) + 1
+    total = sum(by_type.values())
+    peak = max(by_type.values())
+
+    # Последние 30 календарных дней — по ним видно текущий режим, а не средние за полгода.
+    from datetime import date as _d, timedelta as _td
+    edge = (_d.fromisoformat(today) - _td(days=29)).isoformat()
+    recent = [d for d in with_act if d["d"] >= edge]
+    recent_count = sum(len(d["act"]) for d in recent)
+
+    bars = "".join(
+        f'<div class="bar-row"><span class="name">{_esc(name)}</span>'
+        f'<span class="bar-track"><span class="bar-fill" '
+        f'style="width:{round(100 * n / peak)}%;background:{PALETTE["activity"]}"></span></span>'
+        f'<span>{n}</span></div>'
+        for name, n in sorted(by_type.items(), key=lambda kv: -kv[1]))
+
+    last = "".join(
+        f'<tr><td>{d["d"][8:10]}.{d["d"][5:7]}</td><td>{_esc(", ".join(d["act"]))}</td></tr>'
+        for d in reversed(with_act[-8:]))
+
+    return (
+        f'<section><h2>Тренировки: {recent_count} за последние 30 дней, '
+        f'{total} за всё время</h2>'
+        f'<p class="hint">дней с тренировкой: {len(recent)} из 30 · '
+        f'{round(len(recent) / 30 * 7, 1)} в неделю</p>'
+        f'{bars}'
+        f'<div class="scroll"><table><tr><th>Дата</th><th>Что было</th></tr>{last}</table></div>'
+        '</section>')
+
+
 def _static_content(ov: dict, days: list[dict], user: dict) -> str:
     """Начальный экран, готовый к показу без JavaScript: вес, питание и таблица."""
     w = ov.get("weight") or {}
@@ -329,6 +371,8 @@ def _static_content(ov: dict, days: list[dict], user: dict) -> str:
         blocks.append(f'<section><h2>{_esc(head)}</h2>'
                       f'<p class="hint">в среднем {sum(v for _, v in prot) / len(prot):.0f} г в день</p>'
                       f'{_static_bars(prot, "#8b5cf6", goal_p)}</section>')
+
+    blocks.append(_activity_block(days, ov.get("today") or days[-1]["d"]))
 
     rows = []
     for d in reversed(days[-45:]):
