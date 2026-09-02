@@ -342,9 +342,9 @@ def period_data(today_date: date_cls | None = None):
 def dashboard_html() -> bytes:
     """Автономная HTML-страница со всей динамикой — отправляется файлом, никуда не публикуется."""
     today_date = today_local()
-    history, meal_days, _activities, user, _start, _today = period_data(today_date)
+    history, meal_days, activities, user, _start, _today = period_data(today_date)
     data = collect_overview(today_date)
-    return dashboard.build_dashboard_html(data, history, meal_days, user).encode("utf-8")
+    return dashboard.build_dashboard_html(data, history, meal_days, user, activities).encode("utf-8")
 
 
 def export_tables() -> list[tuple[str, bytes]]:
