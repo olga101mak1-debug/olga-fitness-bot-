@@ -7,6 +7,7 @@ from aiogram.types import Message
 
 from app.services import life_service
 from app.services.speech.whisper_client import transcribe
+from app.bot.keyboards import main_menu
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ async def handle_voice(message: Message):
                 return
 
         reply = await life_service.process_message(text)
-        await message.answer(f"🎙 «{text}»\n\n{reply}")
+        await message.answer(f"🎙 «{text}»\n\n{reply}", reply_markup=main_menu)
     except Exception:
         logger.exception("Voice handling failed")
         await message.answer(FRIENDLY_ERROR)
@@ -40,7 +41,7 @@ async def handle_text(message: Message):
     await message.bot.send_chat_action(message.chat.id, "typing")
     try:
         reply = await life_service.process_message(message.text)
-        await message.answer(reply)
+        await message.answer(reply, reply_markup=main_menu)
     except Exception:
         logger.exception("Text handling failed")
         await message.answer(FRIENDLY_ERROR)

@@ -1,13 +1,27 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (InlineKeyboardMarkup, InlineKeyboardButton,
+                           ReplyKeyboardMarkup, KeyboardButton)
 
-main_menu = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="📝 Сегодня", callback_data="today")],
-    [InlineKeyboardButton(text="📊 Вся статистика", callback_data="stats")],
-    [InlineKeyboardButton(text="📅 Итог недели", callback_data="week")],
-    [InlineKeyboardButton(text="🖥 Дашборд", callback_data="dashboard"),
-     InlineKeyboardButton(text="📈 Графики", callback_data="charts")],
-    [InlineKeyboardButton(text="📤 Выгрузить таблицы", callback_data="export")],
-])
+# Подписи кнопок — они же тексты сообщений, которые Telegram отправляет при нажатии,
+# поэтому обработчики в handlers/menu.py сверяются именно с этими константами.
+BTN_TODAY = "📝 Сегодня"
+BTN_STATS = "📊 Статистика"
+BTN_WEEK = "📅 Неделя"
+BTN_CHARTS = "📈 Графики"
+BTN_DASHBOARD = "🖥 Дашборд"
+BTN_EXPORT = "📤 Таблицы"
+
+# Нижняя клавиатура вместо инлайновой: она всегда на экране рядом с полем ввода,
+# а не прячется в старом сообщении, которое приходится искать в переписке.
+main_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=BTN_TODAY), KeyboardButton(text=BTN_STATS)],
+        [KeyboardButton(text=BTN_WEEK), KeyboardButton(text=BTN_CHARTS)],
+        [KeyboardButton(text=BTN_DASHBOARD), KeyboardButton(text=BTN_EXPORT)],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
+    input_field_placeholder="Напиши или скажи, как проходит день",
+)
 
 charts_menu = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="Вес", callback_data="chart_weight"),
@@ -16,5 +30,5 @@ charts_menu = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="Сон", callback_data="chart_sleep"),
      InlineKeyboardButton(text="Работа", callback_data="chart_work")],
     [InlineKeyboardButton(text="Настроение/Энергия/Стресс", callback_data="chart_mood")],
-    [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu")],
+    [InlineKeyboardButton(text="✖️ Закрыть", callback_data="charts_close")],
 ])

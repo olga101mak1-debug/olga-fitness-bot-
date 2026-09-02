@@ -19,14 +19,16 @@ async def start(message: Message):
     await message.answer(
         "Привет! Я LIFE AI — твой личный помощник по здоровью и образу жизни.\n\n"
         "Просто пиши или говори голосом, как прошёл день — вес, сон, работа, тренировки, самочувствие. "
-        "Я сам разберусь, что куда записать, и не буду спрашивать то, что уже знаю.",
+        "Я сама разберусь, что куда записать, и не буду спрашивать то, что уже знаю.\n\n"
+        "Кнопки внизу всегда под рукой: сводка за сегодня, вся статистика, итог недели, "
+        "графики, дашборд и выгрузка таблиц.",
         reply_markup=main_menu,
     )
 
 
 @router.message(Command("menu"))
 async def menu(message: Message):
-    await message.answer("Меню:", reply_markup=main_menu)
+    await message.answer("Кнопки внизу экрана.", reply_markup=main_menu)
 
 
 @router.message(Command("stats", "statistics"))

@@ -1,10 +1,16 @@
+"""Обработка кнопок нижнего меню и инлайнового выбора графиков.
+
+Кнопки нижней клавиатуры приходят обычными текстовыми сообщениями, поэтому этот роутер
+подключается ДО messages.py — иначе нажатие «📊 Статистика» ушло бы в дневник как запись дня.
+"""
 import logging
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, BufferedInputFile
+from aiogram.types import Message, CallbackQuery, BufferedInputFile
 
 from app.services import life_service
 from app.services.charts import charts
-from app.bot.keyboards import main_menu, charts_menu
+from app.bot.keyboards import (main_menu, charts_menu, BTN_TODAY, BTN_STATS, BTN_WEEK,
+                               BTN_CHARTS, BTN_DASHBOARD, BTN_EXPORT)
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -21,70 +27,66 @@ CHART_BUILDERS = {
 }
 
 
-@router.callback_query(F.data == "menu")
-async def cb_menu(cq: CallbackQuery):
-    await cq.message.edit_text("Меню:", reply_markup=main_menu)
-    await cq.answer()
+@router.message(F.text == BTN_TODAY)
+async def btn_today(message: Message):
+    await message.answer(life_service.today_summary(), reply_markup=main_menu)
 
 
-@router.callback_query(F.data == "today")
-async def cb_today(cq: CallbackQuery):
-    await cq.message.answer(life_service.today_summary())
-    await cq.answer()
-
-
-@router.callback_query(F.data == "stats")
-async def cb_stats(cq: CallbackQuery):
+@router.message(F.text == BTN_STATS)
+async def btn_stats(message: Message):
     """Вся накопленная статистика цифрами из базы — без участия модели, значит без выдумок."""
-    await cq.answer("Считаю...")
+    await message.bot.send_chat_action(message.chat.id, "typing")
     try:
-        await cq.message.answer(life_service.full_stats_text())
+        await message.answer(life_service.full_stats_text(), reply_markup=main_menu)
     except Exception:
         logger.exception("Full stats failed")
-        await cq.message.answer(FRIENDLY_ERROR)
+        await message.answer(FRIENDLY_ERROR)
 
 
-@router.callback_query(F.data == "dashboard")
-async def cb_dashboard(cq: CallbackQuery):
-    """HTML-дашборд файлом: открывается в браузере, данные наружу не уходят."""
-    await cq.answer("Собираю дашборд...")
+@router.message(F.text == BTN_WEEK)
+async def btn_week(message: Message):
+    await message.bot.send_chat_action(message.chat.id, "typing")
     try:
-        html = life_service.dashboard_html()
-        await cq.message.answer_document(
-            BufferedInputFile(html, filename="life_ai_dashboard.html"),
+        await message.answer(await life_service.weekly_report(), reply_markup=main_menu)
+    except Exception:
+        logger.exception("Weekly report failed")
+        await message.answer(FRIENDLY_ERROR)
+
+
+@router.message(F.text == BTN_CHARTS)
+async def btn_charts(message: Message):
+    await message.answer("Какой график?", reply_markup=charts_menu)
+
+
+@router.message(F.text == BTN_DASHBOARD)
+async def btn_dashboard(message: Message):
+    """HTML-дашборд файлом: открывается в браузере, данные наружу не уходят."""
+    await message.bot.send_chat_action(message.chat.id, "upload_document")
+    try:
+        await message.answer_document(
+            BufferedInputFile(life_service.dashboard_html(), filename="life_ai_dashboard.html"),
             caption="Открой файл — вся динамика на одной странице.",
         )
     except Exception:
         logger.exception("Dashboard failed")
-        await cq.message.answer(FRIENDLY_ERROR)
+        await message.answer(FRIENDLY_ERROR)
 
 
-@router.callback_query(F.data == "export")
-async def cb_export(cq: CallbackQuery):
-    await cq.answer("Выгружаю...")
+@router.message(F.text == BTN_EXPORT)
+async def btn_export(message: Message):
+    await message.bot.send_chat_action(message.chat.id, "upload_document")
     try:
         for filename, content in life_service.export_tables():
-            await cq.message.answer_document(BufferedInputFile(content, filename=filename))
-        await cq.message.answer("Это вся первичка. Открывается в Excel и Google Таблицах.")
+            await message.answer_document(BufferedInputFile(content, filename=filename))
+        await message.answer("Это вся первичка. Открывается в Excel и Google Таблицах.")
     except Exception:
         logger.exception("Export failed")
-        await cq.message.answer(FRIENDLY_ERROR)
+        await message.answer(FRIENDLY_ERROR)
 
 
-@router.callback_query(F.data == "week")
-async def cb_week(cq: CallbackQuery):
-    await cq.answer("Считаю...")
-    try:
-        text = await life_service.weekly_report()
-        await cq.message.answer(text)
-    except Exception:
-        logger.exception("Weekly report failed")
-        await cq.message.answer(FRIENDLY_ERROR)
-
-
-@router.callback_query(F.data == "charts")
-async def cb_charts(cq: CallbackQuery):
-    await cq.message.edit_text("Какой график?", reply_markup=charts_menu)
+@router.callback_query(F.data == "charts_close")
+async def cb_charts_close(cq: CallbackQuery):
+    await cq.message.delete()
     await cq.answer()
 
 
