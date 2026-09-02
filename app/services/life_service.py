@@ -7,7 +7,8 @@ from app.services.ai import parser as ai_parser
 from app.services.ai import coach as ai_coach
 from app.services.ai import record_editor
 from app.services.ai import weekly_analyst
-from app.services.analytics import stats, overview
+from app.services.analytics import stats, overview, exports
+from app.services.charts import dashboard
 from app.utils import today_local, now_local
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,29 @@ def _totals_line(totals: dict, user: dict) -> str:
     return line + "г"
 
 
+def _meals_breakdown(date: str, user: dict) -> str:
+    """Дневной итог по приёмам пищи, а не одной общей суммой.
+
+    Ольга описывает еду порциями в течение дня, и общая сумма скрывала, из чего она
+    сложилась — поэтому уточнения было невозможно соотнести с конкретным приёмом.
+    """
+    blocks = meal_repo.get_totals_by_meal_type(date)
+    if not blocks:
+        return ""
+    lines = []
+    for b in blocks:
+        time = f" ({b['first_time']})" if b.get("first_time") else ""
+        lines.append(f"• {b['meal_type'].capitalize()}{time}: {b['calories']:.0f} ккал, "
+                     f"белок {b['protein']:.0f}г — {', '.join(b['dishes'])}")
+    totals = meal_repo.get_today_totals(date)
+    lines.append(_totals_line(totals, user))
+    remaining_cal = (user.get("calories_goal_kcal") or 0) - totals["calories"]
+    remaining_prot = (user.get("protein_goal_g") or 0) - totals["protein"]
+    if user.get("calories_goal_kcal") or user.get("protein_goal_g"):
+        lines.append(f"Осталось до нормы: {remaining_cal:.0f} ккал, {remaining_prot:.0f}г белка")
+    return "\n".join(lines)
+
+
 def _shifted_date(base: date_cls, shift) -> str:
     """Дата события с учётом «вчера»/«позавчера». Вперёд не пускаем, назад — не глубже недели."""
     try:
@@ -76,6 +100,7 @@ def _save_parsed_meals(parsed: dict, today_date: date_cls) -> str | None:
             calories=m.get("calories") or 0, protein=m.get("protein") or 0,
             fat=m.get("fat") or 0, carbs=m.get("carbs") or 0,
             calcium=m.get("calcium") or 0, fiber=m.get("fiber") or 0,
+            meal_type=m.get("meal_type"), eaten_at=m.get("eaten_at"),
         )
         (added_today if target_date == today else added_other).append((m, target_date))
 
@@ -88,9 +113,9 @@ def _save_parsed_meals(parsed: dict, today_date: date_cls) -> str | None:
     for m, target_date in added_other:
         lines.append(f"🍽 Записала на {target_date}: {m['dish']} — {(m.get('calories') or 0):.0f} ккал.")
 
-    totals = meal_repo.get_today_totals(today)
-    if totals["count"]:
-        lines.append(_totals_line(totals, user_repo.get_user() or {}))
+    breakdown = _meals_breakdown(today, user_repo.get_user() or {})
+    if breakdown:
+        lines.append(breakdown)
     return "\n".join(lines)
 
 
@@ -135,6 +160,7 @@ def _apply_edits(operations, allowed_dates: list[str],
                         rec_id, description=op.get("dish"), calories=op.get("calories"),
                         protein=op.get("protein"), fat=op.get("fat"), carbs=op.get("carbs"),
                         calcium=op.get("calcium"), fiber=op.get("fiber"),
+                        meal_type=op.get("meal_type"),
                     )
                     row = meal_repo.get_meal_by_id(rec_id)
                     if row:
@@ -230,6 +256,38 @@ def collect_overview(today_date: date_cls | None = None) -> dict:
     )
 
 
+def period_data(today_date: date_cls | None = None):
+    """История, еда по дням и тренировки за всё время — общий вход для витрин."""
+    today_date = today_date or today_local()
+    today = today_date.isoformat()
+    history = daily_log_repo.get_history(limit=FULL_HISTORY_LIMIT)
+    start = history[0]["date"] if history else today
+    return (history,
+            meal_repo.get_daily_totals_range(start, today),
+            event_repos.get_activities_range(start, today),
+            user_repo.get_user() or {},
+            start, today)
+
+
+def dashboard_html() -> bytes:
+    """Автономная HTML-страница со всей динамикой — отправляется файлом, никуда не публикуется."""
+    today_date = today_local()
+    history, meal_days, _activities, user, _start, _today = period_data(today_date)
+    data = collect_overview(today_date)
+    return dashboard.build_dashboard_html(data, history, meal_days, user).encode("utf-8")
+
+
+def export_tables() -> list[tuple[str, bytes]]:
+    """Первичка в таблицах: сводка по дням и все приёмы пищи отдельными строками."""
+    today_date = today_local()
+    history, meal_days, activities, _user, start, today = period_data(today_date)
+    meals = meal_repo.get_meals_range(start, today)
+    return [
+        (f"life_ai_дни_{today}.csv", exports.days_csv(history, meal_days, activities)),
+        (f"life_ai_еда_{today}.csv", exports.meals_csv(meals)),
+    ]
+
+
 def full_stats_text() -> str:
     """Текстовая сводка всей статистики — цифры прямо из базы, без участия модели."""
     data = collect_overview()
@@ -254,10 +312,10 @@ async def process_message(text: str) -> str:
     if editable_meals or editable_activities:
         plan, parsed = await asyncio.gather(
             record_editor.plan_edits(text, editable_meals, editable_activities, allowed_dates),
-            ai_parser.parse(text),
+            ai_parser.parse(text, now=_now_human()),
         )
     else:
-        plan, parsed = {"message_kind": "new_entry", "operations": []}, await ai_parser.parse(text)
+        plan, parsed = {"message_kind": "new_entry", "operations": []}, await ai_parser.parse(text, now=_now_human())
 
     edits_done = _apply_edits(
         plan.get("operations"), allowed_dates,
@@ -315,9 +373,9 @@ async def process_message(text: str) -> str:
     edits_line = None
     if edits_done:
         edits_line = "✅ Поправила: " + "; ".join(edits_done) + "."
-        totals_after = meal_repo.get_today_totals(today)
-        if totals_after["count"]:
-            edits_line += "\n" + _totals_line(totals_after, user_repo.get_user() or {})
+        breakdown_after = _meals_breakdown(today, user_repo.get_user() or {})
+        if breakdown_after:
+            edits_line += "\n" + breakdown_after
 
     today_state = daily_log_repo.get_by_date(today) or {"date": today}
     history = daily_log_repo.get_history(limit=FULL_HISTORY_LIMIT)
@@ -332,6 +390,9 @@ async def process_message(text: str) -> str:
 
     meals = meal_repo.get_today_meals(today)
     meal_totals = meal_repo.get_today_totals(today)
+    # Разбивка по приёмам пищи: чтобы бот мог обсуждать «завтрак» и «ужин» отдельно,
+    # а не только общую сумму за день.
+    meal_totals["по_приёмам"] = meal_repo.get_totals_by_meal_type(today)
     activities = event_repos.get_activities_range(today, today)
 
     # Последнее сообщение диалога — это текущая реплика, она уходит отдельным полем.
@@ -378,14 +439,9 @@ def today_summary() -> str:
                 lines.append(f"• {label}: {val}")
     if has_meals:
         user = user_repo.get_user() or {}
-        cal_line = f"• Еда: {meal_totals['calories']:.0f}"
-        if user.get("calories_goal_kcal"):
-            cal_line += f"/{user['calories_goal_kcal']:.0f}"
-        cal_line += f" ккал, белок {meal_totals['protein']:.0f}"
-        if user.get("protein_goal_g"):
-            cal_line += f"/{user['protein_goal_g']:.0f}"
-        cal_line += f"г ({meal_totals['count']} приёмов пищи)"
-        lines.append(cal_line)
+        lines.append("")
+        lines.append("🍽 Еда по приёмам:")
+        lines.append(_meals_breakdown(today, user))
     return "\n".join(lines)
 
 

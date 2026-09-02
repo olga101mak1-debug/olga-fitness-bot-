@@ -37,6 +37,10 @@ class Meal(Base):
     fiber = Column(Float, default=0)
     created_at = Column(String)
     photo_unique_id = Column(String)
+    # Приём пищи и время еды. Без них дневной итог был одной общей суммой,
+    # и правку «убери второй обед» невозможно было адресовать конкретной записи.
+    meal_type = Column(String)  # завтрак / обед / ужин / перекус
+    eaten_at = Column(String)   # время еды HH:MM (created_at — это время записи, а не еды)
 
 
 class DailyLog(Base):

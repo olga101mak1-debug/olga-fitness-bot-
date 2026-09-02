@@ -2,7 +2,27 @@ from app.database.engine import session_scope
 from app.database.models import Meal
 from app.utils import now_local
 
-MEAL_FIELDS = ["description", "calories", "protein", "fat", "carbs", "calcium", "fiber"]
+MEAL_FIELDS = ["description", "calories", "protein", "fat", "carbs", "calcium", "fiber",
+               "meal_type", "eaten_at"]
+
+MEAL_TYPES = ["завтрак", "обед", "ужин", "перекус"]
+
+# Границы приёмов пищи по времени — запасной вариант, когда тип не назван словами
+# (например, еда пришла фотографией без подписи).
+_MEAL_BY_HOUR = ((5, "завтрак"), (11, "обед"), (16, "ужин"), (22, "перекус"))
+
+
+def guess_meal_type(hhmm: str | None = None) -> str:
+    """Определить приём пищи по времени. Ночная еда считается перекусом."""
+    try:
+        hour = int((hhmm or now_local().strftime("%H:%M")).split(":")[0])
+    except (ValueError, AttributeError, IndexError):
+        hour = now_local().hour
+    result = "перекус"
+    for start, name in _MEAL_BY_HOUR:
+        if hour >= start:
+            result = name
+    return result
 
 
 def _to_dict(row: Meal) -> dict:
@@ -13,14 +33,41 @@ def _to_dict(row: Meal) -> dict:
 
 def add_meal(date: str, description: str, calories: float = 0, protein: float = 0,
              fat: float = 0, carbs: float = 0, calcium: float = 0, fiber: float = 0,
-             photo_unique_id: str | None = None) -> int:
+             photo_unique_id: str | None = None, meal_type: str | None = None,
+             eaten_at: str | None = None) -> int:
+    now = now_local()
+    if meal_type not in MEAL_TYPES:
+        meal_type = guess_meal_type(eaten_at)
+    # eaten_at заполняем ТОЛЬКО когда время еды известно со слов пользователя.
+    # Подставлять сюда текущее время нельзя: она описывает завтрак вечером, и тогда
+    # у завтрака оказывалось время 17:58. Момент записи и так хранится в created_at.
     with session_scope() as s:
         meal = Meal(date=date, description=description, calories=calories, protein=protein,
                      fat=fat, carbs=carbs, calcium=calcium, fiber=fiber,
-                     created_at=now_local().isoformat(timespec="seconds"), photo_unique_id=photo_unique_id)
+                     meal_type=meal_type, eaten_at=eaten_at or now.strftime("%H:%M"),
+                     created_at=now.isoformat(timespec="seconds"), photo_unique_id=photo_unique_id)
         s.add(meal)
         s.flush()
         return meal.id
+
+
+def get_totals_by_meal_type(date: str) -> list[dict]:
+    """Итоги дня в разбивке по приёмам пищи — вместо одной общей суммы за день."""
+    order = {name: i for i, name in enumerate(MEAL_TYPES)}
+    grouped: dict[str, dict] = {}
+    with session_scope() as s:
+        rows = s.query(Meal).filter(Meal.date == date).order_by(Meal.id).all()
+        for m in rows:
+            key = m.meal_type if m.meal_type in MEAL_TYPES else "перекус"
+            block = grouped.setdefault(key, {"meal_type": key, "calories": 0.0, "protein": 0.0,
+                                              "count": 0, "dishes": [], "first_time": m.eaten_at})
+            block["calories"] += m.calories or 0
+            block["protein"] += m.protein or 0
+            block["count"] += 1
+            block["dishes"].append(m.description or "без названия")
+            if m.eaten_at and (not block["first_time"] or m.eaten_at < block["first_time"]):
+                block["first_time"] = m.eaten_at
+    return sorted(grouped.values(), key=lambda b: order.get(b["meal_type"], 99))
 
 
 def update_meal(meal_id: int, **fields):
@@ -104,7 +151,8 @@ def get_today_meals(date: str) -> list[dict]:
     with session_scope() as s:
         meals = s.query(Meal).filter(Meal.date == date).order_by(Meal.created_at).all()
         return [{"description": m.description, "calories": m.calories, "protein": m.protein,
-                  "fat": m.fat, "carbs": m.carbs} for m in meals]
+                  "fat": m.fat, "carbs": m.carbs,
+                  "приём": m.meal_type, "время": m.eaten_at} for m in meals]
 
 
 def get_daily_totals_range(start_date: str, end_date: str) -> list[dict]:
