@@ -3,7 +3,8 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 main_menu = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="📝 Сегодня", callback_data="today")],
     [InlineKeyboardButton(text="📅 Итог недели", callback_data="week")],
-    [InlineKeyboardButton(text="📊 Графики", callback_data="charts")],
+    [InlineKeyboardButton(text="📊 Вся статистика", callback_data="stats")],
+    [InlineKeyboardButton(text="📈 Графики", callback_data="charts")],
 ])
 
 charts_menu = InlineKeyboardMarkup(inline_keyboard=[

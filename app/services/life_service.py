@@ -7,7 +7,7 @@ from app.services.ai import parser as ai_parser
 from app.services.ai import coach as ai_coach
 from app.services.ai import record_editor
 from app.services.ai import weekly_analyst
-from app.services.analytics import stats
+from app.services.analytics import stats, overview
 from app.utils import today_local, now_local
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,10 @@ DAILY_LOG_KEYS = {
 }
 
 DIALOG_MESSAGES_IN_CONTEXT = 20
+
+# Вся история наблюдений, а не последние две недели: бот должен видеть базу целиком,
+# иначе он не может ответить ни на один вопрос про динамику и статистику.
+FULL_HISTORY_LIMIT = 800
 
 # Насколько глубоко в прошлое разрешено записывать и переносить события ("вчера", "позавчера").
 MAX_DAY_SHIFT_BACK = 7
@@ -206,6 +210,34 @@ def _check_weight(weight, history: list[dict], today: str, dialog: list[dict]) -
     return None
 
 
+def collect_overview(today_date: date_cls | None = None) -> dict:
+    """Полная картина по всей истории: вес, замеры, питание, самочувствие, активность, дисциплина.
+
+    Один и тот же источник цифр и для промпта коуча, и для команды «Вся статистика»,
+    и для графиков — чтобы бот физически не мог назвать число, которого нет в базе.
+    """
+    today_date = today_date or today_local()
+    today = today_date.isoformat()
+    history = daily_log_repo.get_history(limit=FULL_HISTORY_LIMIT)
+    start = history[0]["date"] if history else today
+    meal_days = meal_repo.get_daily_totals_range(start, today)
+    activities = event_repos.get_activities_range(start, today)
+    user = user_repo.get_user() or {}
+    return overview.build_overview(
+        history, meal_days, activities, user, today_date,
+        illnesses=event_repos.get_illness_range(start, today),
+        contexts=event_repos.get_context_range(start, today),
+    )
+
+
+def full_stats_text() -> str:
+    """Текстовая сводка всей статистики — цифры прямо из базы, без участия модели."""
+    data = collect_overview()
+    if not data.get("days_with_records"):
+        return "Пока нечего показывать — в дневнике нет ни одной записи."
+    return overview.format_overview_text(data)
+
+
 async def process_message(text: str) -> str:
     today_date = today_local()
     today = today_date.isoformat()
@@ -288,7 +320,11 @@ async def process_message(text: str) -> str:
             edits_line += "\n" + _totals_line(totals_after, user_repo.get_user() or {})
 
     today_state = daily_log_repo.get_by_date(today) or {"date": today}
-    history = daily_log_repo.get_history(limit=30)
+    history = daily_log_repo.get_history(limit=FULL_HISTORY_LIMIT)
+    period_start = history[0]["date"] if history else today
+    meal_days = meal_repo.get_daily_totals_range(period_start, today)
+    period_activities = event_repos.get_activities_range(period_start, today)
+    stats_overview = collect_overview(today_date)
     baseline = daily_log_repo.get_first_entry()
     goal = event_repos.get_active_goal()
     insights = event_repos.get_recent_insights(limit=5)
@@ -308,6 +344,7 @@ async def process_message(text: str) -> str:
         now=_now_human(), meals=meals, meal_totals=meal_totals,
         activities=activities, dialog=dialog,
         applied_edits=edits_done, weight_warning=weight_warning,
+        overview=stats_overview, meal_days=meal_days, period_activities=period_activities,
     )
     header = [line for line in (edits_line, meal_line, weight_warning) if line]
     if header:
@@ -359,8 +396,18 @@ async def weekly_report() -> str:
     days = daily_log_repo.get_range(start, end)
     activities = event_repos.get_activities_range(start, end)
     summary = stats.weekly_summary(days, activities)
+
+    # Питание в недельный итог не попадало вообще — самый управляемый показатель был не виден.
+    meal_days = meal_repo.get_daily_totals_range(start, end)
+    if meal_days:
+        summary["food_days_logged"] = len(meal_days)
+        summary["avg_calories"] = round(sum(d["calories"] for d in meal_days) / len(meal_days))
+        summary["avg_protein"] = round(sum(d["protein"] for d in meal_days) / len(meal_days))
+    else:
+        summary["food_days_logged"] = 0
+
     user = user_repo.get_user() or {}
-    text = await weekly_analyst.generate_weekly_report(summary, user)
+    text = await weekly_analyst.generate_weekly_report(summary, user, overview=collect_overview(today))
 
     lines = [f"📅 Итог недели {start} — {end}"]
     if summary["weight_delta"] is not None:
@@ -373,6 +420,18 @@ async def weekly_report() -> str:
         lines.append(f"💼 Работа: {summary['total_work_hours']:.0f} ч")
     if summary["avg_stress"] is not None:
         lines.append(f"😰 Средний стресс: {summary['avg_stress']:.1f}/10")
+    if summary.get("food_days_logged"):
+        cal_goal = user.get("calories_goal_kcal")
+        prot_goal = user.get("protein_goal_g")
+        food = f"🍽 Еда: записано {summary['food_days_logged']}/7 дней, в среднем {summary['avg_calories']:.0f}"
+        if cal_goal:
+            food += f"/{cal_goal:.0f}"
+        food += f" ккал, белок {summary['avg_protein']:.0f}"
+        if prot_goal:
+            food += f"/{prot_goal:.0f}"
+        lines.append(food + " г")
+    else:
+        lines.append("🍽 Еда: за неделю не записано ни одного дня")
     for act_type, count in summary["activity_counts"].items():
         lines.append(f"🏃 {act_type}: {count}")
     lines.append("")

@@ -105,3 +105,44 @@ def get_today_meals(date: str) -> list[dict]:
         meals = s.query(Meal).filter(Meal.date == date).order_by(Meal.created_at).all()
         return [{"description": m.description, "calories": m.calories, "protein": m.protein,
                   "fat": m.fat, "carbs": m.carbs} for m in meals]
+
+
+def get_daily_totals_range(start_date: str, end_date: str) -> list[dict]:
+    """Итоги по еде по дням за период — основа для аналитики питания и графиков.
+
+    Раньше калории существовали только «за сегодня», поэтому бот не мог ответить
+    ни на один вопрос про питание за прошлые дни.
+    """
+    by_date: dict[str, dict] = {}
+    # Агрегируем внутри сессии: после её закрытия объекты Meal отсоединяются
+    # и обращение к их полям падает с DetachedInstanceError.
+    with session_scope() as s:
+        rows = (
+            s.query(Meal)
+            .filter(Meal.date >= start_date, Meal.date <= end_date)
+            .order_by(Meal.date)
+            .all()
+        )
+        for m in rows:
+            day = by_date.setdefault(m.date, {"date": m.date, "calories": 0.0, "protein": 0.0,
+                                               "fat": 0.0, "carbs": 0.0, "calcium": 0.0,
+                                               "fiber": 0.0, "count": 0})
+            day["calories"] += m.calories or 0
+            day["protein"] += m.protein or 0
+            day["fat"] += m.fat or 0
+            day["carbs"] += m.carbs or 0
+            day["calcium"] += m.calcium or 0
+            day["fiber"] += m.fiber or 0
+            day["count"] += 1
+    return [by_date[d] for d in sorted(by_date)]
+
+
+def get_meals_range(start_date: str, end_date: str) -> list[dict]:
+    with session_scope() as s:
+        rows = (
+            s.query(Meal)
+            .filter(Meal.date >= start_date, Meal.date <= end_date)
+            .order_by(Meal.date, Meal.id)
+            .all()
+        )
+        return [_to_dict(r) for r in rows]

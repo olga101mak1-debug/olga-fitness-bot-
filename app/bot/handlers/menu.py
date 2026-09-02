@@ -32,6 +32,17 @@ async def cb_today(cq: CallbackQuery):
     await cq.answer()
 
 
+@router.callback_query(F.data == "stats")
+async def cb_stats(cq: CallbackQuery):
+    """Вся накопленная статистика цифрами из базы — без участия модели, значит без выдумок."""
+    await cq.answer("Считаю...")
+    try:
+        await cq.message.answer(life_service.full_stats_text())
+    except Exception:
+        logger.exception("Full stats failed")
+        await cq.message.answer(FRIENDLY_ERROR)
+
+
 @router.callback_query(F.data == "week")
 async def cb_week(cq: CallbackQuery):
     await cq.answer("Считаю...")
