@@ -22,3 +22,7 @@ WEEKLY_REPORT_HOUR = 19
 WEEKLY_REPORT_MINUTE = 0
 
 MAX_CLARIFYING_QUESTIONS = 3
+
+# Веб-версия дашборда: полноценный интерактив, которого нет во встроенном
+# просмотрщике Telegram (он не выполняет скрипты). Пустая строка — кнопки не будет.
+WEB_DASHBOARD_URL = os.environ.get("WEB_DASHBOARD_URL", "")

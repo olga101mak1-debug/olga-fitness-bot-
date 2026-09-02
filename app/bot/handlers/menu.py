@@ -5,12 +5,14 @@
 """
 import logging
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, BufferedInputFile
+from aiogram.types import (Message, CallbackQuery, BufferedInputFile,
+                           InlineKeyboardMarkup, InlineKeyboardButton)
 
 from app.services import life_service
 from app.services.charts import charts
 from app.bot.keyboards import (main_menu, charts_menu, BTN_TODAY, BTN_STATS, BTN_WEEK,
                                BTN_CHARTS, BTN_DASHBOARD, BTN_EXPORT)
+from app.config import WEB_DASHBOARD_URL
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -58,14 +60,27 @@ async def btn_charts(message: Message):
     await message.answer("Какой график?", reply_markup=charts_menu)
 
 
+def _web_button() -> InlineKeyboardMarkup | None:
+    """Ссылка на веб-версию. Встроенный просмотрщик Telegram не выполняет скрипты,
+    поэтому переключение периодов работает только в браузере."""
+    if not WEB_DASHBOARD_URL:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌐 Открыть в браузере (с выбором периодов)",
+                              url=WEB_DASHBOARD_URL)]
+    ])
+
+
 @router.message(F.text == BTN_DASHBOARD)
 async def btn_dashboard(message: Message):
-    """HTML-дашборд файлом: открывается в браузере, данные наружу не уходят."""
+    """Ссылка на живую версию плюс файл на случай, когда интернета нет."""
     await message.bot.send_chat_action(message.chat.id, "upload_document")
     try:
         await message.answer_document(
             BufferedInputFile(life_service.dashboard_html(), filename="life_ai_dashboard.html"),
-            caption="Открой файл — вся динамика на одной странице.",
+            caption="Внутри Telegram файл открывается без выбора периодов — это ограничение "
+                    "просмотрщика. По кнопке ниже откроется живая версия с месяцами и неделями.",
+            reply_markup=_web_button(),
         )
     except Exception:
         logger.exception("Dashboard failed")
