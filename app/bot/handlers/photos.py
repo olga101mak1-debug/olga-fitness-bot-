@@ -38,8 +38,14 @@ async def _download(message: Message, file_id: str) -> bytes:
     return buf.read()
 
 
-async def _reply(message: Message, text: str):
-    """Ответить и запомнить ответ в памяти диалога."""
+async def _reply(message: Message, text: str, extras: str | None = None):
+    """Ответить и запомнить ответ в памяти диалога.
+
+    extras — то, что записано из подписи к фото (вес, тренировка, лекарства):
+    показываем это первым, чтобы было видно, что данные не потерялись.
+    """
+    if extras:
+        text = extras + "\n\n" + text
     chat_repo.add("bot", text)
     await message.answer(text)
 
@@ -103,6 +109,10 @@ async def _handle_photos(messages: list[Message]):
     result = await vision.analyze_photos(images, caption=caption, user=user, today_totals=totals_before)
     kind = result.get("kind")
 
+    # В подписи к фото часто не только про еду: «75,1 кг, силовая тренировка, еда — ...».
+    # Раньше всё, кроме блюда, отсюда терялось — вес и тренировка просто не записывались.
+    extras = await life_service.save_caption_extras(caption)
+
     if kind == "food_photo":
         food = result.get("food") or {}
         existing = meal_repo.get_meal_by_photo(today, photos[0].file_unique_id)
@@ -134,8 +144,12 @@ async def _handle_photos(messages: list[Message]):
             totals_line += f"/{goal_prot:.0f}"
         totals_line += "г"
         lines.append(totals_line)
+        # Откуда взялись цифры — важно: расчёт по этикетке и оценка «на глаз» это разная точность.
+        if food.get("label_used"):
+            note = food.get("label_note")
+            lines.append(f"🏷 Посчитано по этикетке с фото{': ' + note if note else ''}")
         lines.append(f"\n{result.get('recommendation', '')}")
-        await _reply(first, "\n".join(lines))
+        await _reply(first, "\n".join(lines), extras)
         return
 
     if kind == "workout_log":
@@ -149,7 +163,7 @@ async def _handle_photos(messages: list[Message]):
             comment = f"{comment} ({details})" if comment else details
         event_repos.add_activity(today, "силовая", None, comment)
         event_repos.add_photo(today, "workout_log", photos[0].file_id, note=result.get("summary"))
-        await _reply(first, f"🏋️ {result.get('recommendation', '')}")
+        await _reply(first, f"🏋️ {result.get('recommendation', '')}", extras)
         return
 
     if kind == "body_composition":
@@ -158,7 +172,7 @@ async def _handle_photos(messages: list[Message]):
         report = result.get("body_composition") or {}
         text = life_service.save_body_composition(report, summary=result.get("summary"))
         event_repos.add_photo(today, "body_composition", photos[0].file_id, note=result.get("summary"))
-        await _reply(first, text)
+        await _reply(first, text, extras)
         return
 
     if kind == "body_photo":
@@ -168,11 +182,12 @@ async def _handle_photos(messages: list[Message]):
             prev_bytes = await _download(first, previous["file_id"])
             result = await vision.analyze_photos(images, caption=caption, previous_image_bytes=prev_bytes)
         event_repos.add_photo(today, "body", photos[0].file_id, angle=angle, note=result.get("summary"))
-        await _reply(first, f"📸 {result.get('recommendation', '')}")
+        await _reply(first, f"📸 {result.get('recommendation', '')}", extras)
         return
 
     await _reply(
         first,
         result.get("recommendation")
         or "Не поняла, что на фото — это скрин тренировки, еда или фото тела? Подпиши фото словом «тренировка», «еда» или «тело».",
+        extras,
     )

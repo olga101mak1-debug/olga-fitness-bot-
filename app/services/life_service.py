@@ -274,6 +274,61 @@ def _check_measurement(field: str, value, history: list[dict], today: str,
     return None
 
 
+async def save_caption_extras(caption: str | None) -> str | None:
+    """Записать всё, что сказано в подписи к фото, кроме самой еды.
+
+    Фото обрабатывает отдельный код, который умеет только распознать блюдо. Из-за этого
+    подпись вроде «75,1 кг, силовая тренировка, еда — грудка...» теряла и вес, и тренировку:
+    записывалась только еда. Еду отсюда намеренно не сохраняем — её уже разобрало фото,
+    иначе один и тот же приём пищи задвоится.
+    """
+    if not caption or not caption.strip():
+        return None
+    today_date = today_local()
+    today = today_date.isoformat()
+    parsed = await ai_parser.parse(caption, now=_now_human())
+
+    lines = []
+    daily_fields = {k: v for k, v in parsed.items() if k in DAILY_LOG_KEYS}
+    warnings = []
+    recent_history = daily_log_repo.get_history(limit=30)
+    dialog = chat_repo.get_today(today, limit=DIALOG_MESSAGES_IN_CONTEXT)
+    if daily_fields.get("weight") is not None:
+        warning = _check_weight(daily_fields["weight"], recent_history, today, dialog)
+        if warning:
+            daily_fields.pop("weight")
+            warnings.append(warning)
+    for field in MEASUREMENT_LABELS:
+        if daily_fields.get(field) is None:
+            continue
+        warning = _check_measurement(field, daily_fields[field], recent_history, today, dialog)
+        if warning:
+            daily_fields.pop(field)
+            warnings.append(warning)
+    if daily_fields:
+        daily_log_repo.upsert(today, **daily_fields)
+        named = {"weight": "вес", "sleep_hours": "сон", "mood": "настроение", "stress": "стресс",
+                 "energy": "энергия", "steps": "шаги", "work_hours": "работа"}
+        shown = [f"{named.get(k, k)} {v}" for k, v in daily_fields.items() if k != "comment"]
+        if shown:
+            lines.append("📌 Из подписи записала: " + ", ".join(shown) + ".")
+
+    for act in parsed.get("activities") or []:
+        event_repos.add_activity(
+            _shifted_date(today_date, act.get("day_shift")),
+            act.get("type"), act.get("minutes"), act.get("comment"),
+        )
+        minutes = f" {act['minutes']} мин" if act.get("minutes") else ""
+        lines.append(f"🏋️ Записала тренировку: {act.get('type')}{minutes}.")
+
+    for med in parsed.get("medications") or []:
+        event_repos.add_medication(today, med.get("drug"), med.get("dosage"))
+        lines.append(f"💊 Записала: {med.get('drug')}.")
+
+    lines.extend(warnings)
+    return "\n".join(lines) if lines else None
+
+
 def save_body_composition(report: dict, summary: str | None = None) -> str:
     """Записать отчёт анализатора состава тела в дневник и честно сказать, что не записано.
 
