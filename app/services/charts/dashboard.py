@@ -71,6 +71,226 @@ def _build_days(history: list[dict], meal_days: list[dict], activities: list[dic
     return days
 
 
+def _num(value, digits=1, signed=False) -> str:
+    if value is None:
+        return "—"
+    fmt = f"{{:+.{digits}f}}" if signed else f"{{:.{digits}f}}"
+    return fmt.format(value)
+
+
+def _points(days: list[dict], key: str) -> list[tuple[str, float]]:
+    return [(d["d"], float(d[key])) for d in days if d.get(key) is not None]
+
+
+def _static_line(points, color="#2563eb", target=None, digits=1, unit="") -> str:
+    """SVG-график, отрисованный на сервере.
+
+    Нужен, потому что файл открывают в местах, где JavaScript не выполняется:
+    предпросмотр документа в Telegram и панель просмотра в чате. Без серверной
+    отрисовки там видно пустую страницу — что и случилось в первый раз.
+    """
+    if len(points) < 2:
+        return '<p class="empty">Недостаточно замеров для графика</p>'
+    W, H, padL, padR, padT, padB = 900, 300, 46, 18, 26, 34
+    from datetime import datetime as _dt
+    xs = [_dt.fromisoformat(p[0]).timestamp() for p in points]
+    ys = [p[1] for p in points]
+    all_y = ys + ([target] if target is not None else [])
+    lo, hi = min(all_y), max(all_y)
+    span = (hi - lo) or max(1.0, abs(hi) * 0.1)
+    lo -= span * 0.18
+    hi += span * 0.18
+    x0, x1 = min(xs), max(xs)
+    xspan = (x1 - x0) or 1
+
+    def px(t):
+        return padL + (t - x0) / xspan * (W - padL - padR)
+
+    def py(v):
+        return H - padB - (v - lo) / (hi - lo) * (H - padT - padB)
+
+    out = [f'<svg viewBox="0 0 {W} {H}" class="chart" role="img">']
+    for i in range(5):
+        v = lo + (hi - lo) * i / 4
+        y = py(v)
+        out.append(f'<line class="grid" x1="{padL}" y1="{y:.1f}" x2="{W - padR}" y2="{y:.1f}"/>')
+        out.append(f'<text class="axis" x="{padL - 7}" y="{y + 4:.1f}" text-anchor="end">{_num(v, digits)}</text>')
+    if target is not None:
+        y = py(target)
+        out.append(f'<line x1="{padL}" y1="{y:.1f}" x2="{W - padR}" y2="{y:.1f}" stroke="#16a34a" '
+                   f'stroke-width="1.6" stroke-dasharray="6 4"/>')
+        out.append(f'<text class="axis" x="{W - padR}" y="{y - 6:.1f}" text-anchor="end" fill="#16a34a">'
+                   f'цель {_num(target, 0)}{unit}</text>')
+    path = " ".join(f"{'M' if i == 0 else 'L'}{px(x):.1f},{py(y):.1f}"
+                    for i, (x, y) in enumerate(zip(xs, ys)))
+    out.append(f'<path d="{path}" fill="none" stroke="{color}" stroke-width="2.2" stroke-linejoin="round"/>')
+    dense = len(points) > 14
+    min_i = min(range(len(ys)), key=lambda i: ys[i])
+    max_i = max(range(len(ys)), key=lambda i: ys[i])
+    for i, (x, y) in enumerate(zip(xs, ys)):
+        cx, cy = px(x), py(y)
+        out.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="3" fill="{color}"/>')
+        if not dense or i in (0, len(ys) - 1, min_i, max_i):
+            dy = 15 if (i > 0 and ys[i] < ys[i - 1]) else -9
+            out.append(f'<text class="val" x="{cx:.1f}" y="{cy + dy:.1f}" text-anchor="middle" '
+                       f'fill="{color}">{_num(y, digits)}</text>')
+    for idx in (0, len(points) // 2, len(points) - 1):
+        label = points[idx][0][8:10] + "." + points[idx][0][5:7]
+        out.append(f'<text class="axis" x="{px(xs[idx]):.1f}" y="{H - 10}" text-anchor="middle">{label}</text>')
+    return "".join(out) + "</svg>"
+
+
+def _static_bars(points, color="#f59e0b", goal=None) -> str:
+    if not points:
+        return '<p class="empty">Нет записей за период</p>'
+    W, H, padL, padR, padT, padB = 900, 280, 46, 18, 26, 34
+    ys = [p[1] for p in points]
+    hi = max(ys + ([goal] if goal else [0])) * 1.18 or 1
+    inner = W - padL - padR
+    step = inner / len(points)
+    bw = max(4.0, min(46.0, step * 0.62))
+
+    def py(v):
+        return H - padB - (v / hi) * (H - padT - padB)
+
+    out = [f'<svg viewBox="0 0 {W} {H}" class="chart" role="img">']
+    for i in range(4):
+        v = hi * i / 3
+        y = py(v)
+        out.append(f'<line class="grid" x1="{padL}" y1="{y:.1f}" x2="{W - padR}" y2="{y:.1f}"/>')
+        out.append(f'<text class="axis" x="{padL - 7}" y="{y + 4:.1f}" text-anchor="end">{v:.0f}</text>')
+    for i, (_, v) in enumerate(points):
+        cx = padL + step * (i + 0.5)
+        top = py(v)
+        faded = ' opacity="0.55"' if goal and v < goal else ""
+        out.append(f'<rect x="{cx - bw / 2:.1f}" y="{top:.1f}" width="{bw:.1f}" '
+                   f'height="{max(1.0, H - padB - top):.1f}" rx="3" fill="{color}"{faded}/>')
+        if len(points) <= 24:
+            out.append(f'<text class="val" x="{cx:.1f}" y="{top - 6:.1f}" text-anchor="middle" '
+                       f'fill="{color}">{v:.0f}</text>')
+    if goal:
+        y = py(goal)
+        out.append(f'<line x1="{padL}" y1="{y:.1f}" x2="{W - padR}" y2="{y:.1f}" stroke="#16a34a" '
+                   f'stroke-width="1.6" stroke-dasharray="6 4"/>')
+        out.append(f'<text class="axis" x="{W - padR}" y="{y - 6:.1f}" text-anchor="end" '
+                   f'fill="#16a34a">норма {goal:.0f}</text>')
+    for idx in (0, len(points) - 1):
+        label = points[idx][0][8:10] + "." + points[idx][0][5:7]
+        out.append(f'<text class="axis" x="{padL + step * (idx + 0.5):.1f}" y="{H - 10}" '
+                   f'text-anchor="middle">{label}</text>')
+    return "".join(out) + "</svg>"
+
+
+def _static_verdict(ov: dict) -> str:
+    w = ov.get("weight") or {}
+    d30, pace = w.get("delta_30d_kg"), w.get("pace_30d_kg_per_week")
+    if not w.get("has_data"):
+        text, tone = "Данных о весе нет", "bad"
+    elif d30 is None or pace is None:
+        text, tone = "Замеров за месяц мало, чтобы судить о динамике", "warn"
+    elif pace <= -0.25:
+        text, tone = f"Вес идёт вниз: {_num(pace, 2, True)} кг в неделю, {_num(d30, 1, True)} кг за 30 дней", "good"
+    elif pace >= 0.25:
+        text, tone = f"Вес растёт: {_num(pace, 2, True)} кг в неделю, {_num(d30, 1, True)} кг за 30 дней", "bad"
+    else:
+        text, tone = f"Плато: {_num(d30, 1, True)} кг за 30 дней, цель не приближается", "warn"
+
+    n30 = (ov.get("nutrition") or {}).get("last_30d") or {}
+    d30d = (ov.get("discipline") or {}).get("last_30d") or {}
+    why = []
+    goal_p = (ov.get("nutrition") or {}).get("protein_goal")
+    if goal_p and n30.get("avg_protein") and n30["avg_protein"] < goal_p * 0.8:
+        why.append(f"белок {n30['avg_protein']:.0f} г при норме {goal_p:.0f}")
+    if d30d.get("days_with_food", 0) < 15:
+        why.append(f"еда записана {d30d.get('days_with_food', 0)} дней из 30")
+    if d30d.get("days_with_weight", 0) < 15:
+        why.append(f"вес записан {d30d.get('days_with_weight', 0)} дней из 30")
+    tail = f'<small>Что за этим стоит: {" · ".join(why)}</small>' if why else ""
+    return f'<div class="verdict {tone}">{_esc(text)}{tail}</div>'
+
+
+def _static_kpi(ov: dict, user: dict) -> str:
+    w = ov.get("weight") or {}
+    n = ov.get("nutrition") or {}
+    n30 = n.get("last_30d") or {}
+    d30 = (ov.get("discipline") or {}).get("last_30d") or {}
+    pace = w.get("pace_30d_kg_per_week")
+    tone_w = "" if pace is None else ("good" if pace <= -0.25 else "bad" if pace >= 0.25 else "warn")
+    prot, goal_p = n30.get("avg_protein"), n.get("protein_goal")
+    tone_p = "good" if prot and goal_p and prot >= goal_p * 0.9 else "bad"
+
+    def card(label, value, note, tone=""):
+        return (f'<div class="kpi {tone}"><div class="kpi-label">{_esc(label)}</div>'
+                f'<div class="kpi-value">{value}</div><div class="kpi-note">{_esc(note)}</div></div>')
+
+    return "".join([
+        card("Вес сейчас", f"{_num(w.get('current_kg'))} кг", f"замер {w.get('current_date', '—')}"),
+        card("С начала", f"{_num(w.get('total_delta_kg'), 1, True)} кг",
+             f"старт {_num(w.get('start_kg'))} кг", "good"),
+        card("За 30 дней", f"{_num(w.get('delta_30d_kg'), 1, True)} кг", "изменение веса", tone_w),
+        card("Темп", _num(pace, 2, True), "кг в неделю по тренду", tone_w),
+        card("До цели", f"{_num(w.get('to_target_kg'))} кг", f"цель {_num(w.get('target_kg'), 0)} кг"),
+        card("Калории", f"{_num(n30.get('avg_calories'), 0)}",
+             f"в среднем за 30 дн. · норма {_num(n.get('calories_goal'), 0)}"),
+        card("Белок", f"{_num(prot, 0)} г", f"в среднем · норма {_num(goal_p, 0)} г", tone_p),
+        card("Дисциплина", f"{d30.get('days_with_food', 0)}/30",
+             f"дней с едой · вес {d30.get('days_with_weight', 0)}/30",
+             "bad" if d30.get("days_with_food", 0) < 15 else "good"),
+    ])
+
+
+def _static_content(ov: dict, days: list[dict], user: dict) -> str:
+    """Начальный экран, готовый к показу без JavaScript: вес, питание и таблица."""
+    w = ov.get("weight") or {}
+    weight_points = _points(days, "w")
+    total = w.get("total_delta_kg")
+    title = ("Замеров веса недостаточно для динамики" if total is None else
+             f"Вес {'снизился на ' + _num(abs(total)) if total < 0 else 'вырос на ' + _num(total)} кг "
+             f"за всё время наблюдений")
+    blocks = [
+        f'<section><h2>{_esc(title)}</h2>'
+        f'<p class="hint">темп за месяц {_num(w.get("pace_30d_kg_per_week"), 2, True)} кг/нед · '
+        f'{len(weight_points)} замеров · цель {_num(w.get("target_kg"), 0)} кг</p>'
+        f'{_static_line(weight_points, "#2563eb", w.get("target_kg"), 1, " кг")}</section>'
+    ]
+
+    kcal = _points(days, "kcal")
+    prot = _points(days, "prot")
+    n = ov.get("nutrition") or {}
+    if kcal:
+        avg_k = sum(v for _, v in kcal) / len(kcal)
+        blocks.append(
+            f'<section><h2>Калории: в среднем {avg_k:.0f} при норме '
+            f'{_num(n.get("calories_goal"), 0)}</h2>'
+            f'<p class="hint">записано {len(kcal)} дней · бледные столбики — ниже нормы</p>'
+            f'{_static_bars(kcal, "#f59e0b", n.get("calories_goal"))}</section>')
+    if prot:
+        goal_p = n.get("protein_goal")
+        hit = sum(1 for _, v in prot if goal_p and v >= goal_p)
+        head = (f"Белок: норма {goal_p:.0f} г не взята ни разу" if goal_p and not hit
+                else f"Белок: норма взята {hit} раз из {len(prot)} записанных дней")
+        blocks.append(f'<section><h2>{_esc(head)}</h2>'
+                      f'<p class="hint">в среднем {sum(v for _, v in prot) / len(prot):.0f} г в день</p>'
+                      f'{_static_bars(prot, "#8b5cf6", goal_p)}</section>')
+
+    rows = []
+    for d in reversed(days[-45:]):
+        def cell(key, digits=1):
+            v = d.get(key)
+            return f"<td>{'—' if v is None else _num(v, digits)}</td>"
+        acts = ", ".join(d["act"]) if d.get("act") else "—"
+        rows.append(f'<tr><td>{d["d"][8:10]}.{d["d"][5:7]}</td>{cell("w", 2)}{cell("waist", 0)}'
+                    f'{cell("belly", 0)}{cell("kcal", 0)}{cell("prot", 0)}{cell("fat_pct")}'
+                    f'{cell("sleep")}{cell("mood", 0)}<td>{_esc(acts)}</td></tr>')
+    blocks.append(
+        '<section><h2>Последние 45 дней с записями</h2>'
+        '<p class="hint">прочерк — в этот день показатель не записывался, это пропуск в дневнике, а не ноль</p>'
+        '<div class="scroll"><table><tr><th>Дата</th><th>Вес</th><th>Талия</th><th>Живот</th>'
+        '<th>Ккал</th><th>Белок</th><th>Жир %</th><th>Сон</th><th>Настр.</th><th>Тренировки</th></tr>'
+        + "".join(rows) + "</table></div></section>")
+    return "".join(blocks)
+
+
 CSS = """
 :root { color-scheme: light dark; --bg:#f6f7f9; --card:#fff; --ink:#0f172a; --muted:#64748b;
   --line:#e2e8f0; --good:#16a34a; --warn:#d97706; --bad:#dc2626; --accent:#2563eb; }
@@ -546,6 +766,10 @@ function renderTabs() {
 
 function render() {
   const days = selectedDays();
+  /* Панели периодов и вкладок приходят скрытыми: без скрипта они бесполезны,
+     а серверный отчёт под ними и так полный. Скрипт есть — показываем. */
+  document.getElementById('pickers').hidden = false;
+  document.getElementById('tabs').hidden = false;
   document.getElementById('pickers').innerHTML = renderPickers();
   document.getElementById('tabs').innerHTML = renderTabs();
   document.getElementById('verdict').innerHTML = days.length ? renderVerdict(days) : '';
@@ -584,6 +808,14 @@ def build_dashboard_html(ov: dict, history: list[dict], meal_days: list[dict],
     # </script> внутри данных разорвал бы тег — экранируем на всякий случай.
     data_json = data_json.replace("</", "<\\/")
 
+    # Страница приходит готовой, а не пустой каркасом под скрипт: во встроенном
+    # просмотрщике Telegram и в предпросмотре чата JavaScript не выполняется, и
+    # клиентский рендер показывал там только заголовок с футером.
+    days = payload["days"]
+    static_verdict = _static_verdict(ov)
+    static_kpi = _static_kpi(ov, user)
+    static_content = _static_content(ov, days, user)
+
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -594,11 +826,14 @@ def build_dashboard_html(ov: dict, history: list[dict], meal_days: list[dict],
 <div class="sub">Данные на {_esc(ov.get('today'))} · наблюдение с {_esc(ov.get('tracking_since'))} ·
 записей за {ov.get('days_with_records', 0)} из {ov.get('days_tracked', 0)} дней</div>
 
-<div class="picker" id="pickers"></div>
-<div id="verdict"></div>
-<div class="grid-kpi" id="kpi"></div>
-<div class="tabs" id="tabs"></div>
-<div id="content"></div>
+<div class="picker" id="pickers" hidden></div>
+<noscript><div class="verdict warn">Этот просмотрщик не выполняет скрипты, поэтому выбор
+периодов и вкладок недоступен — ниже полный отчёт за всё время наблюдений.
+Открой файл в браузере, чтобы переключать месяцы и недели.</div></noscript>
+<div id="verdict">{static_verdict}</div>
+<div class="grid-kpi" id="kpi">{static_kpi}</div>
+<div class="tabs" id="tabs" hidden></div>
+<div id="content">{static_content}</div>
 
 <footer>Данные в этом файле — снимок на {_esc(ov.get('today'))}. Чтобы получить свежий,
 нажми «🖥 Дашборд» в боте или отправь /dashboard.<br>
