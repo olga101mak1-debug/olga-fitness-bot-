@@ -130,9 +130,22 @@ def set_goal(goal: str, start_date: str, end_date: str | None = None, status: st
         s.add(Goal(goal=goal, start_date=start_date, end_date=end_date, status=status))
 
 
-def add_photo(date: str, kind: str, file_id: str, angle: str | None = None, note: str | None = None):
+def add_photo(date: str, kind: str, file_id: str, angle: str | None = None,
+              note: str | None = None, file_unique_id: str | None = None):
     with session_scope() as s:
-        s.add(Photo(date=date, kind=kind, angle=angle, file_id=file_id, note=note))
+        s.add(Photo(date=date, kind=kind, angle=angle, file_id=file_id, note=note,
+                     file_unique_id=file_unique_id))
+
+
+def photo_already_handled(date: str, file_unique_id: str | None, kind: str | None = None) -> bool:
+    """Это же фото уже разбиралось сегодня? Защита от повторной записи одного события."""
+    if not file_unique_id:
+        return False
+    with session_scope() as s:
+        q = s.query(Photo).filter(Photo.date == date, Photo.file_unique_id == file_unique_id)
+        if kind:
+            q = q.filter(Photo.kind == kind)
+        return q.first() is not None
 
 
 def get_last_photo(kind: str, before_date: str, angle: str | None = None) -> dict | None:

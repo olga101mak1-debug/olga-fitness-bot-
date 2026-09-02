@@ -60,31 +60,26 @@ async def btn_charts(message: Message):
     await message.answer("Какой график?", reply_markup=charts_menu)
 
 
-def _web_button() -> InlineKeyboardMarkup | None:
-    """Ссылка на веб-версию. Встроенный просмотрщик Telegram не выполняет скрипты,
-    поэтому переключение периодов работает только в браузере."""
-    if not WEB_DASHBOARD_URL:
-        return None
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌐 Открыть в браузере (с выбором периодов)",
-                              url=WEB_DASHBOARD_URL)]
-    ])
-
-
 @router.message(F.text == BTN_DASHBOARD)
 async def btn_dashboard(message: Message):
-    """Ссылка на живую версию плюс файл на случай, когда интернета нет."""
-    await message.bot.send_chat_action(message.chat.id, "upload_document")
-    try:
-        await message.answer_document(
-            BufferedInputFile(life_service.dashboard_html(), filename="life_ai_dashboard.html"),
-            caption="Внутри Telegram файл открывается без выбора периодов — это ограничение "
-                    "просмотрщика. По кнопке ниже откроется живая версия с месяцами и неделями.",
-            reply_markup=_web_button(),
-        )
-    except Exception:
-        logger.exception("Dashboard failed")
-        await message.answer(FRIENDLY_ERROR)
+    """Только ссылка на живой дашборд — файлом больше не шлём.
+
+    Файл был снимком и в Telegram открывался без кнопок: его просмотрщик не выполняет
+    скрипты. Сайт собирает страницу заново на каждый заход, и там работает всё —
+    выбор месяцев, недель и вкладки.
+    """
+    if not WEB_DASHBOARD_URL:
+        await message.answer("Адрес дашборда не настроен — напиши мне, я поправлю.")
+        return
+    await message.answer(
+        "🖥 Дашборд открывается по кнопке ниже.\n\n"
+        "Внутри: выбор месяца и недели, вкладки — вес, замеры, питание, состав тела, "
+        "самочувствие, тренировки, таблица. Данные собираются в момент открытия.\n\n"
+        "Первый заход запомнит вход на 90 дней — дальше просто открывается.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Открыть дашборд", url=WEB_DASHBOARD_URL)]
+        ]),
+    )
 
 
 @router.message(F.text == BTN_EXPORT)

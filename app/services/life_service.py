@@ -314,10 +314,15 @@ async def save_caption_extras(caption: str | None) -> str | None:
             lines.append("📌 Из подписи записала: " + ", ".join(shown) + ".")
 
     for act in parsed.get("activities") or []:
-        event_repos.add_activity(
-            _shifted_date(today_date, act.get("day_shift")),
-            act.get("type"), act.get("minutes"), act.get("comment"),
-        )
+        target_date = _shifted_date(today_date, act.get("day_shift"))
+        # Подпись к фото часто повторяет то, что уже распознано со скрина журнала
+        # («силовая тренировка» + сам журнал) — второй записи за день быть не должно.
+        existing = {a.get("type") for a in event_repos.get_activities_range(target_date, target_date)}
+        if act.get("type") in existing:
+            lines.append(f"🏋️ Тренировка «{act.get('type')}» за этот день уже записана — "
+                         f"второй раз не добавляю.")
+            continue
+        event_repos.add_activity(target_date, act.get("type"), act.get("minutes"), act.get("comment"))
         minutes = f" {act['minutes']} мин" if act.get("minutes") else ""
         lines.append(f"🏋️ Записала тренировку: {act.get('type')}{minutes}.")
 

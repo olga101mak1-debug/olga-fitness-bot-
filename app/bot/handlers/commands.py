@@ -2,11 +2,13 @@ import logging
 
 from aiogram import Router
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, BufferedInputFile
+from aiogram.types import (Message, BufferedInputFile,
+                           InlineKeyboardMarkup, InlineKeyboardButton)
 
 from app.repositories import user_repo
 from app.services import life_service
 from app.bot.keyboards import main_menu
+from app.config import WEB_DASHBOARD_URL
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -44,16 +46,16 @@ async def stats(message: Message):
 
 @router.message(Command("dashboard"))
 async def dashboard(message: Message):
-    """Вся динамика одной HTML-страницей: приходит файлом, открывается в браузере."""
-    await message.bot.send_chat_action(message.chat.id, "upload_document")
-    try:
-        await message.answer_document(
-            BufferedInputFile(life_service.dashboard_html(), filename="life_ai_dashboard.html"),
-            caption="Открой файл — вся динамика на одной странице.",
-        )
-    except Exception:
-        logger.exception("Dashboard command failed")
-        await message.answer(ERROR_TEXT)
+    """Ссылка на живой дашборд. Файл не шлём: в Telegram он открывается без кнопок."""
+    if not WEB_DASHBOARD_URL:
+        await message.answer("Адрес дашборда не настроен — напиши мне, я поправлю.")
+        return
+    await message.answer(
+        "🖥 Дашборд с выбором месяцев, недель и вкладками:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Открыть дашборд", url=WEB_DASHBOARD_URL)]
+        ]),
+    )
 
 
 @router.message(Command("export"))

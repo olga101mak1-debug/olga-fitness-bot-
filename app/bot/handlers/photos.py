@@ -153,6 +153,12 @@ async def _handle_photos(messages: list[Message]):
         return
 
     if kind == "workout_log":
+        unique_id = photos[0].file_unique_id
+        # Тот же скрин журнала, присланный второй раз, давал вторую тренировку за день.
+        if event_repos.photo_already_handled(today, unique_id, kind="workout_log"):
+            await _reply(first, "🏋️ Этот журнал тренировки уже записан за сегодня — "
+                                "второй раз не добавляю.", extras)
+            return
         exercises = result.get("exercises") or []
         details = "; ".join(
             f"{e.get('name')} {e.get('sets') or ''}x{e.get('reps') or ''} {e.get('weight') or ''}".strip()
@@ -162,7 +168,8 @@ async def _handle_photos(messages: list[Message]):
         if details:
             comment = f"{comment} ({details})" if comment else details
         event_repos.add_activity(today, "силовая", None, comment)
-        event_repos.add_photo(today, "workout_log", photos[0].file_id, note=result.get("summary"))
+        event_repos.add_photo(today, "workout_log", photos[0].file_id, note=result.get("summary"),
+                              file_unique_id=unique_id)
         await _reply(first, f"🏋️ {result.get('recommendation', '')}", extras)
         return
 
@@ -171,7 +178,8 @@ async def _handle_photos(messages: list[Message]):
         # и сохранялся только как фото с подписью, поэтому вес и состав тела терялись.
         report = result.get("body_composition") or {}
         text = life_service.save_body_composition(report, summary=result.get("summary"))
-        event_repos.add_photo(today, "body_composition", photos[0].file_id, note=result.get("summary"))
+        event_repos.add_photo(today, "body_composition", photos[0].file_id, note=result.get("summary"),
+                              file_unique_id=photos[0].file_unique_id)
         await _reply(first, text, extras)
         return
 
@@ -181,7 +189,8 @@ async def _handle_photos(messages: list[Message]):
         if previous:
             prev_bytes = await _download(first, previous["file_id"])
             result = await vision.analyze_photos(images, caption=caption, previous_image_bytes=prev_bytes)
-        event_repos.add_photo(today, "body", photos[0].file_id, angle=angle, note=result.get("summary"))
+        event_repos.add_photo(today, "body", photos[0].file_id, angle=angle, note=result.get("summary"),
+                              file_unique_id=photos[0].file_unique_id)
         await _reply(first, f"📸 {result.get('recommendation', '')}", extras)
         return
 

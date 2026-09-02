@@ -147,6 +147,9 @@ class Photo(Base):
     kind = Column(String)  # workout_log / body
     angle = Column(String)  # front/side/back — только для body
     file_id = Column(String)
+    # Постоянный идентификатор снимка: по нему видно, что этот же журнал тренировки
+    # уже разбирался, и второй раз записывать тренировку не нужно.
+    file_unique_id = Column(String)
     note = Column(Text)
 
 
