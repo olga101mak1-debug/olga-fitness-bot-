@@ -91,7 +91,7 @@ def _static_line(points, color="#2563eb", target=None, digits=1, unit="") -> str
     """
     if len(points) < 2:
         return '<p class="empty">Недостаточно замеров для графика</p>'
-    W, H, padL, padR, padT, padB = 900, 300, 46, 18, 26, 34
+    W, H, padL, padR, padT, padB = 520, 330, 46, 14, 26, 40
     from datetime import datetime as _dt
     xs = [_dt.fromisoformat(p[0]).timestamp() for p in points]
     ys = [p[1] for p in points]
@@ -124,7 +124,7 @@ def _static_line(points, color="#2563eb", target=None, digits=1, unit="") -> str
     path = " ".join(f"{'M' if i == 0 else 'L'}{px(x):.1f},{py(y):.1f}"
                     for i, (x, y) in enumerate(zip(xs, ys)))
     out.append(f'<path d="{path}" fill="none" stroke="{color}" stroke-width="2.2" stroke-linejoin="round"/>')
-    dense = len(points) > 14
+    dense = len(points) > 8
     min_i = min(range(len(ys)), key=lambda i: ys[i])
     max_i = max(range(len(ys)), key=lambda i: ys[i])
     for i, (x, y) in enumerate(zip(xs, ys)):
@@ -143,12 +143,12 @@ def _static_line(points, color="#2563eb", target=None, digits=1, unit="") -> str
 def _static_bars(points, color="#f59e0b", goal=None) -> str:
     if not points:
         return '<p class="empty">Нет записей за период</p>'
-    W, H, padL, padR, padT, padB = 900, 280, 46, 18, 26, 34
+    W, H, padL, padR, padT, padB = 520, 300, 46, 14, 26, 40
     ys = [p[1] for p in points]
     hi = max(ys + ([goal] if goal else [0])) * 1.18 or 1
     inner = W - padL - padR
     step = inner / len(points)
-    bw = max(4.0, min(46.0, step * 0.62))
+    bw = max(4.0, min(34.0, step * 0.62))
 
     def py(v):
         return H - padB - (v / hi) * (H - padT - padB)
@@ -165,7 +165,7 @@ def _static_bars(points, color="#f59e0b", goal=None) -> str:
         faded = ' opacity="0.55"' if goal and v < goal else ""
         out.append(f'<rect x="{cx - bw / 2:.1f}" y="{top:.1f}" width="{bw:.1f}" '
                    f'height="{max(1.0, H - padB - top):.1f}" rx="3" fill="{color}"{faded}/>')
-        if len(points) <= 24:
+        if len(points) <= 14:
             out.append(f'<text class="val" x="{cx:.1f}" y="{top - 6:.1f}" text-anchor="middle" '
                        f'fill="{color}">{v:.0f}</text>')
     if goal:
@@ -239,6 +239,57 @@ def _static_kpi(ov: dict, user: dict) -> str:
     ])
 
 
+MONTHS_RU = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
+
+
+def _monthly_table(days: list[dict], user: dict) -> str:
+    """Сводка по месяцам без единой строчки скрипта.
+
+    В Telegram страница открывается без JavaScript, поэтому разбивка по периодам
+    должна существовать прямо в разметке, а не появляться по клику.
+    """
+    by_month: dict[str, list[dict]] = {}
+    for d in days:
+        by_month.setdefault(d["d"][:7], []).append(d)
+    if not by_month:
+        return ""
+
+    goal_p = user.get("protein_goal_g")
+    rows = []
+    prev_weight = None
+    for key in sorted(by_month):
+        chunk = by_month[key]
+        weights = [d["w"] for d in chunk if d.get("w") is not None]
+        kcal = [d["kcal"] for d in chunk if d.get("kcal") is not None]
+        prot = [d["prot"] for d in chunk if d.get("prot") is not None]
+        acts = sum(len(d["act"]) for d in chunk if d.get("act"))
+        end = weights[-1] if weights else None
+        # Считаем от последнего веса прошлого месяца: изменение внутри месяца
+        # прячет переход через границу месяца.
+        change = None if end is None or prev_weight is None else end - prev_weight
+        if end is not None:
+            prev_weight = end
+        cls = "" if change is None else ("down" if change < 0 else "up" if change > 0 else "flat")
+        label = MONTHS_RU[int(key[5:7]) - 1] + " " + key[2:4]
+        rows.append(
+            f'<tr><td>{label}</td>'
+            f'<td>{_num(end)}</td>'
+            f'<td class="{cls}">{_num(change, 1, True)}</td>'
+            f'<td>{f"{sum(kcal) / len(kcal):.0f}" if kcal else "—"}</td>'
+            f'<td>{f"{sum(prot) / len(prot):.0f}" if prot else "—"}</td>'
+            f'<td>{len(kcal)}</td><td>{len(weights)}</td><td>{acts}</td></tr>')
+
+    note = f'норма белка {goal_p:.0f} г' if goal_p else ""
+    return (
+        '<section><h2>Помесячно: где вес двигался, а где стоял</h2>'
+        f'<p class="hint">изменение веса — к последнему замеру прошлого месяца · {note} · '
+        'зелёный — снижение, красный — рост</p>'
+        '<div class="scroll"><table>'
+        '<tr><th>Месяц</th><th>Вес на конец</th><th>Δ веса</th><th>Ккал</th><th>Белок</th>'
+        '<th>Дней с едой</th><th>Дней с весом</th><th>Трен.</th></tr>'
+        + "".join(rows) + '</table></div></section>')
+
+
 def _static_content(ov: dict, days: list[dict], user: dict) -> str:
     """Начальный экран, готовый к показу без JavaScript: вес, питание и таблица."""
     w = ov.get("weight") or {}
@@ -247,18 +298,23 @@ def _static_content(ov: dict, days: list[dict], user: dict) -> str:
     title = ("Замеров веса недостаточно для динамики" if total is None else
              f"Вес {'снизился на ' + _num(abs(total)) if total < 0 else 'вырос на ' + _num(total)} кг "
              f"за всё время наблюдений")
+    shown = weight_points[-30:]
+    tail_note = f' · на графике последние {len(shown)} из {len(weight_points)}' if len(shown) < len(weight_points) else ''
     blocks = [
         f'<section><h2>{_esc(title)}</h2>'
         f'<p class="hint">темп за месяц {_num(w.get("pace_30d_kg_per_week"), 2, True)} кг/нед · '
-        f'{len(weight_points)} замеров · цель {_num(w.get("target_kg"), 0)} кг</p>'
-        f'{_static_line(weight_points, "#2563eb", w.get("target_kg"), 1, " кг")}</section>'
+        f'{len(weight_points)} замеров · цель {_num(w.get("target_kg"), 0)} кг{tail_note}</p>'
+        f'{_static_line(shown, "#2563eb", w.get("target_kg"), 1, " кг")}</section>'
     ]
+
+    blocks.append(_monthly_table(days, user))
 
     kcal = _points(days, "kcal")
     prot = _points(days, "prot")
     n = ov.get("nutrition") or {}
     if kcal:
         avg_k = sum(v for _, v in kcal) / len(kcal)
+        kcal = kcal[-14:]
         blocks.append(
             f'<section><h2>Калории: в среднем {avg_k:.0f} при норме '
             f'{_num(n.get("calories_goal"), 0)}</h2>'
@@ -267,6 +323,7 @@ def _static_content(ov: dict, days: list[dict], user: dict) -> str:
     if prot:
         goal_p = n.get("protein_goal")
         hit = sum(1 for _, v in prot if goal_p and v >= goal_p)
+        prot = prot[-14:]
         head = (f"Белок: норма {goal_p:.0f} г не взята ни разу" if goal_p and not hit
                 else f"Белок: норма взята {hit} раз из {len(prot)} записанных дней")
         blocks.append(f'<section><h2>{_esc(head)}</h2>'
@@ -333,9 +390,9 @@ section { background:var(--card); border:1px solid var(--line); border-radius:13
 section h2 { font-size:15px; margin:0 0 3px; letter-spacing:-0.2px; }
 section .hint { font-size:12.5px; color:var(--muted); margin:0 0 12px; }
 svg.chart { width:100%; height:auto; display:block; overflow:visible; }
-line.grid { stroke:var(--line); stroke-width:1; }
-text.axis { font-size:11px; fill:var(--muted); }
-text.val { font-size:10.5px; font-weight:600; }
+line.grid { stroke:var(--line); stroke-width:1.2; }
+text.axis { font-size:15px; fill:var(--muted); }
+text.val { font-size:15.5px; font-weight:700; }
 .empty { color:var(--muted); font-size:13px; margin:14px 0; }
 table { width:100%; border-collapse:collapse; font-size:13px; }
 th, td { text-align:right; padding:6px 7px; border-bottom:1px solid var(--line); white-space:nowrap; }
@@ -461,7 +518,7 @@ function svgLine(points, opts = {}) {
     return '<p class="empty">Один замер за период: ' + F(points[0].y, opts.digits ?? 1) +
            ' (' + fmtDay(points[0].x) + '). Для линии нужно минимум два.</p>';
   }
-  const W = 900, H = 300, padL = 46, padR = 18, padT = 26, padB = 34;
+  const W = 520, H = 330, padL = 46, padR = 14, padT = 26, padB = 40;
   const color = opts.color || '#2563eb', digits = opts.digits ?? 1;
   const refs = (opts.refs || []).filter(r => r.value !== null && r.value !== undefined);
   const ys = points.map(p => p.y).concat(refs.map(r => r.value));
@@ -488,7 +545,7 @@ function svgLine(points, opts = {}) {
 
   /* Подписываем значения прямо у точек. Когда точек много, все подписи сливаются —
      тогда оставляем ключевые: первую, последнюю, минимум и максимум. */
-  const dense = points.length > 14;
+  const dense = points.length > 8;
   const minI = points.reduce((b, p, i) => p.y < points[b].y ? i : b, 0);
   const maxI = points.reduce((b, p, i) => p.y > points[b].y ? i : b, 0);
   points.forEach((p, i) => {
@@ -508,11 +565,11 @@ function svgLine(points, opts = {}) {
 
 function svgBars(points, opts = {}) {
   if (!points.length) return '<p class="empty">За этот период записей нет</p>';
-  const W = 900, H = 280, padL = 46, padR = 18, padT = 26, padB = 34;
+  const W = 520, H = 300, padL = 46, padR = 14, padT = 26, padB = 40;
   const color = opts.color || '#f59e0b', goal = opts.goal;
   const hi = Math.max(...points.map(p => p.y), goal || 0) * 1.18 || 1;
   const inner = W - padL - padR, step = inner / points.length;
-  const bw = Math.max(4, Math.min(46, step * 0.62));
+  const bw = Math.max(4, Math.min(34, step * 0.62));
   const py = v => H - padB - (v / hi) * (H - padT - padB);
   let s = `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img">`;
   for (let i = 0; i <= 3; i++) {
@@ -524,7 +581,7 @@ function svgBars(points, opts = {}) {
     const cx = padL + step * (i + 0.5), top = py(p.y);
     const under = goal && p.y < goal;
     s += `<rect x="${(cx - bw / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1, H - padB - top).toFixed(1)}" rx="3" fill="${color}" opacity="${under ? 0.55 : 1}"><title>${fmtDay(p.x)}: ${Math.round(p.y)}</title></rect>`;
-    if (points.length <= 24) {
+    if (points.length <= 14) {
       s += `<text class="val" x="${cx.toFixed(1)}" y="${(top - 6).toFixed(1)}" text-anchor="middle" fill="${color}">${Math.round(p.y)}</text>`;
     }
   });
